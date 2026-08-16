@@ -5,7 +5,8 @@ import { Camera, Circle, Hand, Play, RotateCcw, Sparkles, Trash2, ShieldCheck } 
 import './styles.css';
 
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
-const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22/wasm';
+// Keep the WASM runtime on the exact same MediaPipe version as package.json.
+const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
 
 function App() {
   const videoRef = useRef(null);
@@ -104,7 +105,6 @@ function App() {
     const video = videoRef.current;
     const landmarker = handLandmarkerRef.current;
 
-    // Keep the loop alive while the AI model is downloading/initializing.
     if (video && landmarker && video.readyState >= 2) {
       const timestamp = performance.now();
       if (timestamp > lastTimestampRef.current) {
@@ -122,18 +122,41 @@ function App() {
 
   const initializeHandLandmarker = async () => {
     if (handLandmarkerRef.current) return handLandmarkerRef.current;
-    const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-    const landmarker = await HandLandmarker.createFromOptions(vision, {
-      baseOptions: { modelAssetPath: MODEL_URL },
-      runningMode: 'VIDEO',
-      numHands: 1,
-      minHandDetectionConfidence: 0.5,
-      minHandPresenceConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
-    handLandmarkerRef.current = landmarker;
-    if (mountedRef.current) setVisionReady(true);
-    return landmarker;
+
+    try {
+      setError('');
+      const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+      const landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: {
+          modelAssetPath: MODEL_URL,
+          delegate: 'GPU',
+        },
+        runningMode: 'VIDEO',
+        numHands: 1,
+        minHandDetectionConfidence: 0.45,
+        minHandPresenceConfidence: 0.45,
+        minTrackingConfidence: 0.45,
+      });
+      handLandmarkerRef.current = landmarker;
+      if (mountedRef.current) setVisionReady(true);
+      return landmarker;
+    } catch (gpuError) {
+      // Some mobile browsers expose WebGL but cannot initialize MediaPipe's GPU delegate.
+      // Retry with CPU so tracking remains portable.
+      console.warn('MediaPipe GPU initialization failed; retrying with CPU.', gpuError);
+      const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+      const landmarker = await HandLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
+        runningMode: 'VIDEO',
+        numHands: 1,
+        minHandDetectionConfidence: 0.45,
+        minHandPresenceConfidence: 0.45,
+        minTrackingConfidence: 0.45,
+      });
+      handLandmarkerRef.current = landmarker;
+      if (mountedRef.current) setVisionReady(true);
+      return landmarker;
+    }
   };
 
   const startCamera = async () => {
@@ -163,17 +186,16 @@ function App() {
       video.srcObject = stream;
       await video.play();
 
-      // Camera is intentionally made visible immediately after permission.
       setCameraOn(true);
       requestAnimationFrame(setupCanvas);
       setLoading(false);
 
-      // Vision initializes independently; the drawing loop stays alive meanwhile.
       initializeHandLandmarker().catch((err) => {
         console.error('Vision initialization error:', err);
         if (mountedRef.current) {
           setVisionReady(false);
-          setError('Camera is working, but hand tracking could not load. Check your internet connection and refresh the page.');
+          const detail = err?.message ? ` (${err.message.slice(0, 120)})` : '';
+          setError(`Hand tracking could not initialize${detail}. Please refresh and try again.`);
         }
       });
     } catch (err) {
