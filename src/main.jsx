@@ -4,25 +4,28 @@ import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import { Camera, Circle, Hand, Play, RotateCcw, Sparkles, Trash2, ShieldCheck } from 'lucide-react';
 import './styles.css';
 
+// MediaPipe's documented web setup uses the Tasks Vision WASM bundle plus the official hand model.
+// Keep both pinned to the same known-good 0.10.x runtime and use CPU for broad mobile compatibility.
+const MP_VERSION = '0.10.35';
+const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
-// Keep the WASM runtime on the exact same MediaPipe version as package.json.
-const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm';
 
 function App() {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const handLandmarkerRef = useRef(null);
+  const landmarkerRef = useRef(null);
   const streamRef = useRef(null);
   const frameRef = useRef(null);
   const previousPointRef = useRef(null);
-  const lastTimestampRef = useRef(-1);
-  const smoothingRef = useRef(null);
+  const smoothPointRef = useRef(null);
+  const lastVideoTimeRef = useRef(-1);
   const mountedRef = useRef(true);
 
   const [cameraOn, setCameraOn] = useState(false);
-  const [tracking, setTracking] = useState(false);
   const [visionReady, setVisionReady] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [tracking, setTracking] = useState(false);
+  const [loadingCamera, setLoadingCamera] = useState(false);
+  const [loadingVision, setLoadingVision] = useState(false);
   const [error, setError] = useState('');
   const [permissionState, setPermissionState] = useState('prompt');
   const [brushSize, setBrushSize] = useState(6);
@@ -35,21 +38,15 @@ function App() {
     if (!canvas || !video) return;
     const rect = video.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    const existing = canvas.toDataURL();
-    canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-    canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+    canvas.width = Math.max(1, Math.round(rect.width * dpr));
+    canvas.height = Math.max(1, Math.round(rect.height * dpr));
     canvas.style.width = `${rect.width}px`;
     canvas.style.height = `${rect.height}px`;
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    if (strokes > 0 && existing !== 'data:,') {
-      const image = new Image();
-      image.onload = () => ctx.drawImage(image, 0, 0, rect.width, rect.height);
-      image.src = existing;
-    }
-  }, [strokes]);
+  }, []);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -57,34 +54,35 @@ function App() {
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     previousPointRef.current = null;
-    smoothingRef.current = null;
+    smoothPointRef.current = null;
     setStrokes(0);
   }, []);
 
-  const isIndexOnly = (landmarks) => {
-    if (!landmarks || landmarks.length < 21) return false;
-    return landmarks[8].y < landmarks[6].y && landmarks[12].y > landmarks[10].y && landmarks[16].y > landmarks[14].y && landmarks[20].y > landmarks[18].y;
+  const indexOnly = (hand) => {
+    if (!hand || hand.length < 21) return false;
+    // Only draw when the index is extended and the other three fingers are folded.
+    return hand[8].y < hand[6].y && hand[12].y > hand[10].y && hand[16].y > hand[14].y && hand[20].y > hand[18].y;
   };
 
-  const drawFromHand = useCallback((result) => {
+  const drawResult = useCallback((result) => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
     const hand = result?.landmarks?.[0];
-    if (!hand || !isIndexOnly(hand)) {
+    if (!canvas || !hand || !indexOnly(hand)) {
       previousPointRef.current = null;
-      smoothingRef.current = null;
+      smoothPointRef.current = null;
       setTracking(false);
       return;
     }
 
-    const tip = hand[8];
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-    const rawX = (1 - tip.x) * width;
-    const rawY = tip.y * height;
-    const previous = smoothingRef.current || { x: rawX, y: rawY };
-    const smooth = { x: previous.x * 0.72 + rawX * 0.28, y: previous.y * 0.72 + rawY * 0.28 };
-    smoothingRef.current = smooth;
+    const target = { x: (1 - hand[8].x) * width, y: hand[8].y * height };
+    const previousSmooth = smoothPointRef.current || target;
+    const point = {
+      x: previousSmooth.x * 0.72 + target.x * 0.28,
+      y: previousSmooth.y * 0.72 + target.y * 0.28,
+    };
+    smoothPointRef.current = point;
 
     const ctx = canvas.getContext('2d');
     ctx.strokeStyle = brushColor;
@@ -92,122 +90,105 @@ function App() {
     if (previousPointRef.current) {
       ctx.beginPath();
       ctx.moveTo(previousPointRef.current.x, previousPointRef.current.y);
-      ctx.lineTo(smooth.x, smooth.y);
+      ctx.lineTo(point.x, point.y);
       ctx.stroke();
-      setStrokes((value) => value + 1);
+      setStrokes((n) => n + 1);
     }
-    previousPointRef.current = smooth;
+    previousPointRef.current = point;
     setTracking(true);
   }, [brushColor, brushSize]);
 
-  const detectLoop = useCallback(() => {
-    if (!cameraOn) return;
+  const processFrames = useCallback(() => {
     const video = videoRef.current;
-    const landmarker = handLandmarkerRef.current;
+    const landmarker = landmarkerRef.current;
+    if (!cameraOn) return;
 
-    if (video && landmarker && video.readyState >= 2) {
-      const timestamp = performance.now();
-      if (timestamp > lastTimestampRef.current) {
-        lastTimestampRef.current = timestamp;
-        try {
-          const result = landmarker.detectForVideo(video, timestamp);
-          drawFromHand(result);
-        } catch (err) {
-          console.error('Hand detection error:', err);
-        }
+    if (video && landmarker && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime !== lastVideoTimeRef.current) {
+      lastVideoTimeRef.current = video.currentTime;
+      try {
+        const result = landmarker.detectForVideo(video, performance.now());
+        drawResult(result);
+      } catch (err) {
+        console.error('MediaPipe frame error:', err);
       }
     }
-    frameRef.current = requestAnimationFrame(detectLoop);
-  }, [cameraOn, drawFromHand]);
+    frameRef.current = requestAnimationFrame(processFrames);
+  }, [cameraOn, drawResult]);
 
-  const initializeHandLandmarker = async () => {
-    if (handLandmarkerRef.current) return handLandmarkerRef.current;
+  const initializeVision = async () => {
+    if (landmarkerRef.current) return landmarkerRef.current;
+    setLoadingVision(true);
+    setError('');
 
     try {
-      setError('');
       const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-      const landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: {
-          modelAssetPath: MODEL_URL,
-          delegate: 'GPU',
-        },
-        runningMode: 'VIDEO',
-        numHands: 1,
-        minHandDetectionConfidence: 0.45,
-        minHandPresenceConfidence: 0.45,
-        minTrackingConfidence: 0.45,
-      });
-      handLandmarkerRef.current = landmarker;
-      if (mountedRef.current) setVisionReady(true);
-      return landmarker;
-    } catch (gpuError) {
-      // Some mobile browsers expose WebGL but cannot initialize MediaPipe's GPU delegate.
-      // Retry with CPU so tracking remains portable.
-      console.warn('MediaPipe GPU initialization failed; retrying with CPU.', gpuError);
-      const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+      // CPU is intentional: it is the most portable delegate across desktop and mobile browsers.
       const landmarker = await HandLandmarker.createFromOptions(vision, {
         baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
         runningMode: 'VIDEO',
         numHands: 1,
-        minHandDetectionConfidence: 0.45,
-        minHandPresenceConfidence: 0.45,
-        minTrackingConfidence: 0.45,
+        minHandDetectionConfidence: 0.5,
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5,
       });
-      handLandmarkerRef.current = landmarker;
-      if (mountedRef.current) setVisionReady(true);
+      landmarkerRef.current = landmarker;
+      if (mountedRef.current) {
+        setVisionReady(true);
+        setLoadingVision(false);
+      }
       return landmarker;
+    } catch (err) {
+      console.error('MediaPipe initialization failed:', err);
+      if (mountedRef.current) {
+        setLoadingVision(false);
+        setVisionReady(false);
+        setError(`Hand tracking failed to load: ${err?.message || 'MediaPipe could not initialize.'}`);
+      }
+      return null;
     }
   };
 
   const startCamera = async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
-      setError('Camera access is not supported by this browser. Use Chrome or Safari.');
+      setError('Camera access is not supported by this browser. Use a current version of Chrome or Safari.');
       return;
     }
     if (!window.isSecureContext) {
-      setError('Camera access requires HTTPS. Open the deployed AirCanvas link.');
+      setError('Camera access requires HTTPS. Open the deployed AirCanvas website.');
       return;
     }
 
     try {
       setError('');
-      setLoading(true);
-      setVisionReady(false);
-      setPermissionState('prompt');
-
+      setLoadingCamera(true);
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: { ideal: 'user' } },
+        video: { facingMode: { ideal: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
       });
 
-      setPermissionState('granted');
       streamRef.current = stream;
+      setPermissionState('granted');
       const video = videoRef.current;
       video.srcObject = stream;
+      video.onloadedmetadata = () => {
+        video.play().catch((err) => console.error('Video play failed:', err));
+        requestAnimationFrame(setupCanvas);
+      };
       await video.play();
-
       setCameraOn(true);
-      requestAnimationFrame(setupCanvas);
-      setLoading(false);
+      setLoadingCamera(false);
 
-      initializeHandLandmarker().catch((err) => {
-        console.error('Vision initialization error:', err);
-        if (mountedRef.current) {
-          setVisionReady(false);
-          const detail = err?.message ? ` (${err.message.slice(0, 120)})` : '';
-          setError(`Hand tracking could not initialize${detail}. Please refresh and try again.`);
-        }
-      });
+      // Start vision separately from camera startup. The camera stays visible while the model loads.
+      initializeVision();
     } catch (err) {
-      console.error('Camera startup error:', err);
-      setCameraOn(false);
-      setLoading(false);
+      console.error('Camera startup failed:', err);
+      setLoadingCamera(false);
       if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
         setPermissionState('denied');
-        setError('Camera permission was denied. Allow camera access in your browser settings, then press Open Camera again.');
+        setError('Camera permission was denied. Allow camera access in browser settings and press Open Camera again.');
       } else if (err?.name === 'NotFoundError') setError('No camera was found on this device.');
-      else if (err?.name === 'NotReadableError') setError('The camera is already being used by another app or browser tab.');
-      else setError('We could not start the camera. Check your browser permissions and try again.');
+      else if (err?.name === 'NotReadableError') setError('The camera is already being used by another application or browser tab.');
+      else setError(`Camera could not start: ${err?.message || 'unknown error'}`);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     }
@@ -219,13 +200,15 @@ function App() {
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     previousPointRef.current = null;
-    smoothingRef.current = null;
+    smoothPointRef.current = null;
+    lastVideoTimeRef.current = -1;
     setTracking(false);
     setCameraOn(false);
     setVisionReady(false);
+    setLoadingVision(false);
   };
 
-  const downloadDrawing = () => {
+  const exportDrawing = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const link = document.createElement('a');
@@ -235,25 +218,21 @@ function App() {
   };
 
   useEffect(() => {
-    if (cameraOn) frameRef.current = requestAnimationFrame(detectLoop);
-    return () => { if (frameRef.current) cancelAnimationFrame(frameRef.current); };
-  }, [cameraOn, detectLoop]);
+    if (cameraOn) frameRef.current = requestAnimationFrame(processFrames);
+    return () => frameRef.current && cancelAnimationFrame(frameRef.current);
+  }, [cameraOn, processFrames]);
 
   useEffect(() => {
-    const onResize = () => setupCanvas();
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    window.addEventListener('resize', setupCanvas);
+    return () => window.removeEventListener('resize', setupCanvas);
   }, [setupCanvas]);
 
   useEffect(() => () => {
     mountedRef.current = false;
+    if (frameRef.current) cancelAnimationFrame(frameRef.current);
     streamRef.current?.getTracks().forEach((track) => track.stop());
-    handLandmarkerRef.current?.close();
+    landmarkerRef.current?.close();
   }, []);
-
-  const permissionMessage = permissionState === 'denied'
-    ? 'Camera permission is blocked. Enable it in your browser settings, then try again.'
-    : 'Press Open Camera. Your browser will ask for permission.';
 
   return (
     <main className="app-shell">
@@ -268,22 +247,22 @@ function App() {
           <h1>Draw with<br /><em>your hand.</em></h1>
           <p className="lede">Point one finger at the camera. AirCanvas tracks your fingertip and turns every movement into a live digital stroke.</p>
           <div className="controls">
-            {!cameraOn ? <button className="primary" onClick={startCamera} disabled={loading}>{loading ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}{loading ? 'OPENING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}</button> : <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>}
+            {!cameraOn ? <button className="primary" onClick={startCamera} disabled={loadingCamera}>{loadingCamera ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}{loadingCamera ? 'OPENING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}</button> : <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>}
             <button className="secondary" onClick={clearCanvas}><Trash2 size={17} /> CLEAR</button>
-            <button className="secondary" onClick={downloadDrawing}>EXPORT PNG</button>
+            <button className="secondary" onClick={exportDrawing}>EXPORT PNG</button>
           </div>
-          {!cameraOn && !error && <div className="permission-note"><ShieldCheck size={16} /><span>{permissionMessage}</span></div>}
-          {error && <p className="error">{error}</p>}
+          {!cameraOn && !error && <div className="permission-note"><ShieldCheck size={16} /><span>Press Open Camera. Your browser will ask for permission.</span></div>}
+          {error && <p className="error-box">{error}</p>}
         </div>
 
         <div className="workspace">
-          <div className="workspace-head"><div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div><div className="metrics"><span>{tracking ? 'TRACKING INDEX' : cameraOn && !visionReady ? 'LOADING VISION' : 'WAITING FOR HAND'}</span><b>{strokes} pts</b></div></div>
+          <div className="workspace-head"><div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div><div className="metrics"><span>{tracking ? 'TRACKING INDEX' : loadingVision ? 'LOADING VISION' : visionReady ? 'SHOW ONE FINGER' : cameraOn ? 'VISION OFFLINE' : 'STANDBY'}</span><b>{strokes} pts</b></div></div>
           <div className="stage">
-            <video ref={videoRef} className="camera" playsInline muted />
+            <video ref={videoRef} className="camera" playsInline muted autoPlay />
             <canvas ref={canvasRef} className="drawing-layer" />
             {!cameraOn && <div className="stage-empty"><div className="empty-icon"><Hand size={34} strokeWidth={1.3} /></div><strong>Open your camera to start</strong><span>Press Open Camera and allow access.</span></div>}
-            {cameraOn && !visionReady && !error && <div className="vision-loading"><Circle className="spin" size={18} /><span>Loading hand tracking…</span></div>}
-            <div className={`tracking-pill ${tracking ? 'active' : ''}`}><span /> {tracking ? 'INDEX DETECTED' : visionReady ? 'SHOW ONE FINGER' : 'VISION LOADING'}</div>
+            {cameraOn && loadingVision && !error && <div className="vision-loading"><Circle className="spin" size={18} /><span>Loading hand tracking…</span></div>}
+            <div className={`tracking-pill ${tracking ? 'active' : ''}`}><span />{tracking ? 'INDEX DETECTED' : visionReady ? 'SHOW ONE FINGER' : loadingVision ? 'VISION LOADING' : 'VISION OFFLINE'}</div>
           </div>
         </div>
       </section>
@@ -294,7 +273,6 @@ function App() {
         <div className="gesture-note"><RotateCcw size={16} /><span><b>Gesture:</b> one finger extended = draw · fold it = pause</span></div>
         <div className="tech-stack">MEDIA PIPE · CANVAS 2D · REACT · JAVASCRIPT</div>
       </section>
-
       <footer className="footer">Made by - Amar</footer>
     </main>
   );
