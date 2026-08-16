@@ -1,37 +1,86 @@
 # AirCanvas
 
-> Draw in the air. Turn motion into pixels.
+> Draw in the air. Let AI understand the motion.
 
-AirCanvas is a real-time computer-vision passion project that uses a webcam to track a user's index finger and render its movement as a digital drawing on an HTML canvas.
+AirCanvas is a real-time computer-vision and AI passion project that turns hand movement into digital strokes and is being evolved into an intelligent drawing agent.
 
-## What it does
+## Architecture
 
-- Opens the user's webcam directly in the browser.
-- Detects one hand using MediaPipe Hand Landmarker.
-- Uses the index fingertip landmark as the drawing cursor.
-- Draws only while the index finger is extended and the other fingers are folded.
-- Smooths fingertip coordinates to reduce webcam jitter.
-- Supports brush sizes, ink colors, canvas clearing, and PNG export.
-- Keeps the computer-vision loop local to the browser; no camera frames are uploaded by the app.
+```text
+Camera (phone / laptop)
+        |
+        v
+React + Canvas + MediaPipe landmarks
+        |
+        | compact 21-point hand landmarks
+        v
+Python FastAPI + WebSocket
+        |
+        +--> gesture classification
+        +--> trajectory analysis
+        +--> future computer-vision models
+        +--> future AI agent
+        |
+        v
+Canvas + intelligent drawing interpretation
+```
+
+The browser owns camera permissions and real-time rendering. Python owns the intelligence layer. We intentionally avoid uploading raw camera video on every frame; the browser can send compact landmark data to the Python service instead.
+
+## Current capabilities
+
+- Browser webcam access
+- MediaPipe hand landmark tracking
+- Index fingertip drawing
+- Gesture-gated drawing
+- Coordinate smoothing
+- Brush sizes and ink colors
+- Canvas clearing and PNG export
+- Python FastAPI vision engine
+- WebSocket protocol for real-time gesture events
+- Mobile-friendly browser architecture
 
 ## Stack
 
+### Frontend
 - React + Vite
 - JavaScript
 - MediaPipe Tasks Vision
 - HTML Canvas 2D
 - Browser MediaDevices API
 
-MediaPipe's current Hand Landmarker API supports video/live-stream workflows and exposes hand landmarks for real-time tracking.
+### AI / Vision backend
+- Python
+- FastAPI
+- WebSockets
+- NumPy
+- OpenCV
+- MediaPipe
+- Pydantic
 
 ## Run locally
+
+Frontend:
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open the local Vite URL, allow camera access, and click **OPEN CAMERA**.
+Python vision engine:
+
+```bash
+cd backend
+python -m venv .venv
+# Windows
+.venv\\Scripts\\activate
+# macOS/Linux
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+Then open the Vite URL, allow camera access, and click **OPEN CAMERA**.
 
 ## Roadmap
 
@@ -43,27 +92,31 @@ Then open the local Vite URL, allow camera access, and click **OPEN CAMERA**.
 - [x] Brush controls
 - [x] PNG export
 
-### Phase 2 — Gesture controls
-- [ ] Pinch to change brush size
-- [ ] Two-finger gesture for cursor mode
-- [ ] Fist to erase
-- [ ] Swipe to undo/redo
+### Phase 2 — Python vision engine
+- [x] FastAPI service
+- [x] WebSocket vision channel
+- [x] Server-side gesture classification
+- [x] Landmark-based movement analysis
+- [ ] Connect production frontend to deployed Python service
 
-### Phase 3 — AI drawing agent
-- [ ] Recognize rough shapes
-- [ ] Convert rough sketches into clean geometry
-- [ ] Recognize handwritten symbols/text
-- [ ] Ask an AI model to interpret the canvas
-- [ ] Generate structured diagrams from freehand drawings
+### Phase 3 — Intelligent drawing agent
+- [ ] Pinch / fist / swipe gesture vocabulary
+- [ ] Stroke segmentation
+- [ ] Shape recognition
+- [ ] Handwriting recognition
+- [ ] Canvas understanding
+- [ ] Natural-language commands
+- [ ] AI-assisted drawing cleanup
 
-### Phase 4 — Portfolio-grade system
+### Phase 4 — Portfolio-grade AI system
+- [ ] Convert sketches into structured diagrams
 - [ ] Drawing history and replay
 - [ ] Performance telemetry
-- [ ] Web Worker / off-main-thread experimentation
-- [ ] Mobile camera support
-- [ ] Public deployment
-- [ ] Technical architecture documentation
+- [ ] Web Worker experimentation
+- [ ] Mobile production deployment
+- [ ] Model evaluation and benchmarks
+- [ ] Technical architecture and research notes
 
 ## Project philosophy
 
-This is intentionally being built as an engineering experiment rather than a tutorial clone. The goal is to explore real-time human-computer interaction, computer vision, gesture interfaces, rendering, and AI-assisted interpretation in one product.
+This is intentionally being built as an engineering experiment rather than a tutorial clone. The goal is to explore real-time human-computer interaction, computer vision, Python AI systems, gesture interfaces, rendering, and intelligent interpretation in one product.
