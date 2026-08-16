@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { Camera, Circle, Eraser, Hand, Play, RotateCcw, Sparkles, Trash2 } from 'lucide-react';
+import { Camera, Circle, Hand, Play, RotateCcw, Sparkles, Trash2, ShieldCheck } from 'lucide-react';
 import './styles.css';
 
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
@@ -21,6 +21,7 @@ function App() {
   const [tracking, setTracking] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [permissionState, setPermissionState] = useState('prompt');
   const [brushSize, setBrushSize] = useState(6);
   const [brushColor, setBrushColor] = useState('#ffffff');
   const [strokes, setStrokes] = useState(0);
@@ -76,8 +77,6 @@ function App() {
     const tip = hand[8];
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
-
-    // Mirror X because the camera preview is mirrored for natural interaction.
     const rawX = (1 - tip.x) * width;
     const rawY = tip.y * height;
     const previous = smoothingRef.current || { x: rawX, y: rawY };
@@ -140,23 +139,57 @@ function App() {
   };
 
   const startCamera = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setError('Camera access is not supported by this browser. Open AirCanvas in Chrome, Safari, or another modern browser.');
+      return;
+    }
+
+    if (!window.isSecureContext) {
+      setError('Camera access requires HTTPS. Open the deployed AirCanvas link, not an insecure HTTP page.');
+      return;
+    }
+
     try {
       setError('');
       setLoading(true);
-      await initializeHandLandmarker();
+      setPermissionState('prompt');
+
+      // Ask for camera permission FIRST. The browser owns the permission dialog.
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: { ideal: 'user' },
+        },
         audio: false,
       });
+
+      setPermissionState('granted');
       streamRef.current = stream;
       videoRef.current.srcObject = stream;
       await videoRef.current.play();
+
+      // Only load computer vision after the user has granted camera access.
+      await initializeHandLandmarker();
       setCameraOn(true);
       requestAnimationFrame(() => setupCanvas());
     } catch (err) {
-      console.error(err);
-      setError('Camera access or hand-tracking model failed. Allow camera access and try again.');
+      console.error('Camera startup error:', err);
       setCameraOn(false);
+
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        setPermissionState('denied');
+        setError('Camera permission was denied. Allow camera access in your browser settings, then press Open Camera again.');
+      } else if (err?.name === 'NotFoundError') {
+        setError('No camera was found on this device.');
+      } else if (err?.name === 'NotReadableError') {
+        setError('The camera is already being used by another app or browser tab. Close it and try again.');
+      } else {
+        setError('We could not start the camera. Check your browser permissions and try again.');
+      }
+
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
     } finally {
       setLoading(false);
     }
@@ -200,6 +233,10 @@ function App() {
     handLandmarkerRef.current?.close();
   }, []);
 
+  const permissionMessage = permissionState === 'denied'
+    ? 'Camera permission is blocked. Enable it in your browser settings, then try again.'
+    : 'Your browser will ask for camera permission after you press Open Camera.';
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -225,7 +262,7 @@ function App() {
             {!cameraOn ? (
               <button className="primary" onClick={startCamera} disabled={loading}>
                 {loading ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}
-                {loading ? 'INITIALIZING VISION' : 'OPEN CAMERA'}
+                {loading ? 'REQUESTING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}
               </button>
             ) : (
               <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>
@@ -233,6 +270,13 @@ function App() {
             <button className="secondary" onClick={clearCanvas}><Trash2 size={17} /> CLEAR</button>
             <button className="secondary" onClick={downloadDrawing}>EXPORT PNG</button>
           </div>
+
+          {!cameraOn && !error && (
+            <div className="permission-note">
+              <ShieldCheck size={16} />
+              <span>{permissionMessage}</span>
+            </div>
+          )}
           {error && <p className="error">{error}</p>}
         </div>
 
@@ -248,7 +292,7 @@ function App() {
               <div className="stage-empty">
                 <div className="empty-icon"><Hand size={34} strokeWidth={1.3} /></div>
                 <strong>Camera feed is offline</strong>
-                <span>Open the camera to start drawing in the air.</span>
+                <span>Press Open Camera and allow access to begin.</span>
               </div>
             )}
             <div className={`tracking-pill ${tracking ? 'active' : ''}`}>
