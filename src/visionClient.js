@@ -1,12 +1,18 @@
-const DEFAULT_WS_URL = 'ws://localhost:8000/ws/vision';
-
 let socket = null;
 let latestResult = null;
-let status = 'disconnected';
+let status = 'standalone';
 
 export function connectVisionEngine(onResult, onStatus) {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
-  const url = import.meta.env.VITE_VISION_WS_URL || DEFAULT_WS_URL;
+
+  // Python is optional. Never try localhost from a deployed HTTPS site.
+  const url = import.meta.env.VITE_VISION_WS_URL;
+  if (!url) {
+    status = 'standalone';
+    onStatus?.(status);
+    return;
+  }
+
   try {
     socket = new WebSocket(url);
     status = 'connecting';
@@ -16,13 +22,15 @@ export function connectVisionEngine(onResult, onStatus) {
       try {
         latestResult = JSON.parse(event.data);
         onResult?.(latestResult);
-      } catch { latestResult = null; }
+      } catch {
+        latestResult = null;
+      }
     };
-    socket.onerror = () => { status = 'error'; onStatus?.(status); };
-    socket.onclose = () => { status = 'disconnected'; socket = null; onStatus?.(status); };
+    socket.onerror = () => { status = 'standalone'; onStatus?.(status); };
+    socket.onclose = () => { status = 'standalone'; socket = null; onStatus?.(status); };
   } catch {
     socket = null;
-    status = 'error';
+    status = 'standalone';
     onStatus?.(status);
   }
 }
@@ -43,5 +51,5 @@ export function disconnectVisionEngine() {
   socket?.close();
   socket = null;
   latestResult = null;
-  status = 'disconnected';
+  status = 'standalone';
 }
