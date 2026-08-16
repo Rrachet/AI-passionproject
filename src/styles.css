@@ -5,7 +5,7 @@
 body { margin: 0; min-width: 320px; background: #050505; }
 button { font: inherit; }
 
-.app-shell { min-height: 100vh; padding: 26px 34px 34px; background: radial-gradient(circle at 70% 10%, #141414 0, #050505 34%, #050505 100%); }
+.app-shell { min-height: 100vh; padding: 26px 34px 18px; background: radial-gradient(circle at 70% 10%, #141414 0, #050505 34%, #050505 100%); }
 .topbar { display: flex; align-items: center; justify-content: space-between; max-width: 1440px; margin: 0 auto; padding-bottom: 22px; border-bottom: 1px solid #222; }
 .brand { display: flex; align-items: center; gap: 11px; }
 .brand-mark { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid #343434; border-radius: 10px; background: #101010; color: #9dffbd; }
@@ -32,7 +32,9 @@ button { cursor: pointer; }
 .secondary { border: 1px solid #2c2c2c; color: #aaa; background: #0d0d0d; }
 .secondary:hover { border-color: #555; color: #eee; }
 button:disabled { opacity: .65; cursor: wait; }
-.error { color: #ff8d9d; font: 11px 'DM Mono', monospace; line-height: 1.6; max-width: 460px; }
+.error-box { display: flex; align-items: flex-start; gap: 9px; max-width: 520px; margin-top: 15px; padding: 11px 12px; border: 1px solid #3a2025; border-radius: 8px; color: #ff8d9d; background: #120a0c; font: 10px 'DM Mono', monospace; line-height: 1.55; }
+.error-box svg { flex: 0 0 auto; margin-top: 1px; }
+.error-box p { margin: 0; }
 .permission-note { display: flex; align-items: flex-start; gap: 9px; max-width: 460px; margin-top: 15px; padding: 11px 12px; border: 1px solid #1e2b22; border-radius: 8px; color: #71917d; background: #0a110d; font: 10px 'DM Mono', monospace; line-height: 1.55; }
 .permission-note svg { flex: 0 0 auto; color: #9dffbd; }
 .spin { animation: spin 1s linear infinite; }
@@ -44,14 +46,17 @@ button:disabled { opacity: .65; cursor: wait; }
 .metrics { display: flex; gap: 13px; }
 .metrics b { color: #aaa; font-weight: 400; }
 .stage { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 420px; overflow: hidden; border: 1px solid #292929; border-radius: 14px; background: #0b0b0b; box-shadow: 0 24px 70px #0008; }
-.camera { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: .48; filter: saturate(.65) contrast(1.08); }
-.drawing-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
-.stage::after { content: ''; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(180deg, #00000018, transparent 35%, #00000040); }
-.stage-empty { position: absolute; inset: 0; z-index: 2; display: grid; place-content: center; justify-items: center; gap: 10px; text-align: center; color: #777; background: radial-gradient(circle at center, #121212, #090909 60%); padding: 20px; }
+.camera { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: .48; filter: saturate(.65) contrast(1.08); background: #0b0b0b; }
+.drawing-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+.stage::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; background: linear-gradient(180deg, #00000018, transparent 35%, #00000040); }
+.stage-empty { position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; justify-items: center; gap: 10px; text-align: center; color: #777; background: radial-gradient(circle at center, #121212, #090909 60%); padding: 20px; }
 .empty-icon { display: grid; place-items: center; width: 70px; height: 70px; margin-bottom: 4px; border: 1px solid #292929; border-radius: 50%; color: #777; }
 .stage-empty strong { color: #ccc; font-size: 14px; font-weight: 500; }
-.stage-empty span { font-size: 12px; color: #666; }
-.tracking-pill { position: absolute; z-index: 3; left: 14px; bottom: 14px; display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #292929; border-radius: 999px; background: #080808c9; backdrop-filter: blur(10px); color: #777; font: 9px 'DM Mono', monospace; letter-spacing: .06em; }
+.stage-empty span { max-width: 360px; font-size: 12px; line-height: 1.5; color: #666; }
+.stage-cta { height: 38px; margin-top: 4px; padding: 0 16px; border: 1px solid #9dffbd; border-radius: 8px; background: #9dffbd; color: #07100a; font-size: 11px; font-weight: 600; }
+.stage-cta:hover { background: #c4ffd5; }
+.vision-loading { position: absolute; z-index: 5; top: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid #292929; border-radius: 999px; background: #080808d9; backdrop-filter: blur(10px); color: #aaa; font: 9px 'DM Mono', monospace; white-space: nowrap; }
+.tracking-pill { position: absolute; z-index: 5; left: 14px; bottom: 14px; display: flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #292929; border-radius: 999px; background: #080808c9; backdrop-filter: blur(10px); color: #777; font: 9px 'DM Mono', monospace; letter-spacing: .06em; }
 .tracking-pill span { width: 5px; height: 5px; border-radius: 50%; background: #555; }
 .tracking-pill.active { color: #9dffbd; border-color: #9dffbd33; }
 .tracking-pill.active span { background: #9dffbd; box-shadow: 0 0 9px #9dffbd; }
@@ -68,6 +73,7 @@ button:disabled { opacity: .65; cursor: wait; }
 .gesture-note { display: flex; align-items: center; gap: 7px; margin-left: auto; color: #666; font: 10px 'DM Mono', monospace; }
 .gesture-note b { color: #aaa; font-weight: 400; }
 .tech-stack { color: #444; white-space: nowrap; }
+.footer { max-width: 1440px; margin: 34px auto 0; padding-top: 18px; border-top: 1px solid #171717; text-align: center; color: #555; font: 10px 'DM Mono', monospace; letter-spacing: .08em; }
 
 @media (max-width: 1050px) {
   .hero { grid-template-columns: 1fr; gap: 24px; padding-top: 42px; }
@@ -91,4 +97,5 @@ button:disabled { opacity: .65; cursor: wait; }
   .tech-stack { width: 100%; white-space: normal; }
   .tool-panel { gap: 14px; }
   .gesture-note { width: 100%; }
+  .footer { margin-top: 28px; }
 }
