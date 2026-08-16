@@ -1,26 +1,34 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { Camera, Circle, Hand, Play, Sparkles, Trash2, ShieldCheck, Pause } from 'lucide-react';
+import { Camera, Circle, Hand, Play, Sparkles, Trash2, ShieldCheck } from 'lucide-react';
 import './styles.css';
 
 const MP_VERSION = '0.10.35';
 const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
-const TARGET_FPS = 30;
+const TARGET_FPS = 45;
 
-function fingerExtended(hand, tip, pip) {
-  return hand[tip].y < hand[pip].y - 0.015;
+// Geometry-based finger detection is more tolerant of hand rotation than checking Y only.
+function fingerIsExtended(hand, mcp, pip, tip) {
+  const a = { x: hand[mcp].x - hand[pip].x, y: hand[mcp].y - hand[pip].y };
+  const b = { x: hand[tip].x - hand[pip].x, y: hand[tip].y - hand[pip].y };
+  const dot = a.x * b.x + a.y * b.y;
+  const mag = Math.hypot(a.x, a.y) * Math.hypot(b.x, b.y) || 1;
+  const angle = Math.acos(Math.max(-1, Math.min(1, dot / mag))) * 180 / Math.PI;
+  const tipFromMcp = Math.hypot(hand[tip].x - hand[mcp].x, hand[tip].y - hand[mcp].y);
+  const pipFromMcp = Math.hypot(hand[pip].x - hand[mcp].x, hand[pip].y - hand[mcp].y);
+  return angle > 145 && tipFromMcp > pipFromMcp * 1.12;
 }
 
 function classifyGesture(hand) {
   if (!hand || hand.length < 21) return 'none';
-  const index = fingerExtended(hand, 8, 6);
-  const middle = fingerExtended(hand, 12, 10);
-  const ring = fingerExtended(hand, 16, 14);
-  const pinky = fingerExtended(hand, 20, 18);
-  if (!index && !middle && !ring && !pinky) return 'pause';
+  const index = fingerIsExtended(hand, 5, 6, 8);
+  const middle = fingerIsExtended(hand, 9, 10, 12);
+  const ring = fingerIsExtended(hand, 13, 14, 16);
+  const pinky = fingerIsExtended(hand, 17, 18, 20);
   if (index && !middle && !ring && !pinky) return 'draw';
+  if (!index && !middle && !ring && !pinky) return 'pause';
   if (index && middle && ring && pinky) return 'clear';
   return 'none';
 }
@@ -50,6 +58,7 @@ function App() {
   const [brushColor, setBrushColor] = useState('#ffffff');
   const [strokes, setStrokes] = useState(0);
   const [gesture, setGesture] = useState('none');
+  const [pointer, setPointer] = useState(null);
 
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -79,12 +88,11 @@ function App() {
   const handleGesture = useCallback((nextGesture) => {
     const now = performance.now();
     setGesture(nextGesture);
-    if (nextGesture === 'draw') return;
-
-    previousPointRef.current = null;
-    smoothPointRef.current = null;
-    setTracking(false);
-
+    if (nextGesture !== 'draw') {
+      previousPointRef.current = null;
+      smoothPointRef.current = null;
+      setTracking(false);
+    }
     if (nextGesture === 'clear') {
       if (!clearHoldRef.current) clearHoldRef.current = now;
       if (now - clearHoldRef.current >= 850 && now - lastClearRef.current >= 1400) {
@@ -102,22 +110,28 @@ function App() {
     const hand = result?.landmarks?.[0];
     if (!canvas || !hand) {
       handleGesture('none');
+      setPointer(null);
       return;
     }
+
+    const width = canvas.clientWidth;
+    const height = canvas.clientHeight;
+    const tip = hand[8];
+    const rawPoint = { x: (1 - tip.x) * width, y: tip.y * height };
+    const previousSmooth = smoothPointRef.current || rawPoint;
+    const distance = Math.hypot(rawPoint.x - previousSmooth.x, rawPoint.y - previousSmooth.y);
+    // Adaptive smoothing: high alpha for fast movement, lower alpha for tiny jitter.
+    const alpha = distance > 55 ? 0.86 : distance > 18 ? 0.72 : 0.55;
+    const point = {
+      x: previousSmooth.x + (rawPoint.x - previousSmooth.x) * alpha,
+      y: previousSmooth.y + (rawPoint.y - previousSmooth.y) * alpha,
+    };
+    smoothPointRef.current = point;
+    setPointer(point);
 
     const nextGesture = classifyGesture(hand);
     handleGesture(nextGesture);
     if (nextGesture !== 'draw') return;
-
-    const width = canvas.clientWidth;
-    const height = canvas.clientHeight;
-    const target = { x: (1 - hand[8].x) * width, y: hand[8].y * height };
-    const previous = smoothPointRef.current || target;
-    const point = {
-      x: previous.x * 0.55 + target.x * 0.45,
-      y: previous.y * 0.55 + target.y * 0.45,
-    };
-    smoothPointRef.current = point;
 
     const ctx = canvas.getContext('2d');
     ctx.strokeStyle = brushColor;
@@ -139,7 +153,6 @@ function App() {
     const landmarker = landmarkerRef.current;
     const now = performance.now();
     const minInterval = 1000 / TARGET_FPS;
-
     if (video && landmarker && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime !== lastVideoTimeRef.current && now - lastDetectionRef.current >= minInterval) {
       lastVideoTimeRef.current = video.currentTime;
       lastDetectionRef.current = now;
@@ -158,9 +171,9 @@ function App() {
       baseOptions: { modelAssetPath: MODEL_URL, delegate },
       runningMode: 'VIDEO',
       numHands: 1,
-      minHandDetectionConfidence: 0.4,
-      minHandPresenceConfidence: 0.4,
-      minTrackingConfidence: 0.4,
+      minHandDetectionConfidence: 0.28,
+      minHandPresenceConfidence: 0.28,
+      minTrackingConfidence: 0.28,
     });
   };
 
@@ -193,14 +206,8 @@ function App() {
   };
 
   const startCamera = async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setError('Camera access is not supported by this browser. Use a current version of Chrome or Safari.');
-      return;
-    }
-    if (!window.isSecureContext) {
-      setError('Camera access requires HTTPS. Open the deployed AirCanvas website.');
-      return;
-    }
+    if (!navigator.mediaDevices?.getUserMedia) return setError('Camera access is not supported by this browser. Use a current version of Chrome or Safari.');
+    if (!window.isSecureContext) return setError('Camera access requires HTTPS. Open the deployed AirCanvas website.');
     try {
       setError('');
       setLoadingCamera(true);
@@ -243,6 +250,7 @@ function App() {
     clearHoldRef.current = 0;
     setTracking(false);
     setGesture('none');
+    setPointer(null);
     setCameraOn(false);
     setVisionReady(false);
     setLoadingVision(false);
@@ -261,12 +269,7 @@ function App() {
     if (cameraOn) frameRef.current = requestAnimationFrame(processFrames);
     return () => frameRef.current && cancelAnimationFrame(frameRef.current);
   }, [cameraOn, processFrames]);
-
-  useEffect(() => {
-    window.addEventListener('resize', setupCanvas);
-    return () => window.removeEventListener('resize', setupCanvas);
-  }, [setupCanvas]);
-
+  useEffect(() => { window.addEventListener('resize', setupCanvas); return () => window.removeEventListener('resize', setupCanvas); }, [setupCanvas]);
   useEffect(() => () => {
     mountedRef.current = false;
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
@@ -278,52 +281,18 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="topbar">
-        <div className="brand"><div className="brand-mark"><Sparkles size={16} /></div><div><strong>AirCanvas</strong><span>AI PASSION PROJECT / 001</span></div></div>
-        <div className={`system-status ${cameraOn ? 'live' : ''}`}><span className="status-dot" />{cameraOn ? 'VISION SYSTEM LIVE' : 'SYSTEM STANDBY'}</div>
-      </header>
-
+      <header className="topbar"><div className="brand"><div className="brand-mark"><Sparkles size={16} /></div><div><strong>AirCanvas</strong><span>AI PASSION PROJECT / 001</span></div></div><div className={`system-status ${cameraOn ? 'live' : ''}`}><span className="status-dot" />{cameraOn ? 'VISION SYSTEM LIVE' : 'SYSTEM STANDBY'}</div></header>
       <section className="hero">
-        <div className="hero-copy">
-          <p className="eyebrow">REAL-TIME COMPUTER VISION</p>
-          <h1>Draw with<br /><em>your hand.</em></h1>
-          <p className="lede">Write naturally in the air. AirCanvas tracks your index fingertip in real time and turns your movement into a clean digital stroke.</p>
-          <div className="controls">
-            {!cameraOn ? <button className="primary" onClick={startCamera} disabled={loadingCamera}>{loadingCamera ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}{loadingCamera ? 'OPENING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}</button> : <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>}
-            <button className="secondary" onClick={clearCanvas}><Trash2 size={17} /> CLEAR</button>
-            <button className="secondary" onClick={exportDrawing}>EXPORT PNG</button>
-          </div>
-          {!cameraOn && !error && <div className="permission-note"><ShieldCheck size={16} /><span>Press Open Camera. Your browser will ask for permission.</span></div>}
-          {error && <p className="error-box">{error}</p>}
+        <div className="hero-copy"><p className="eyebrow">REAL-TIME COMPUTER VISION</p><h1>Draw with<br /><em>your hand.</em></h1><p className="lede">Write naturally in the air. AirCanvas follows your index fingertip and turns your movement into a clean digital stroke.</p>
+          <div className="controls">{!cameraOn ? <button className="primary" onClick={startCamera} disabled={loadingCamera}>{loadingCamera ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}{loadingCamera ? 'OPENING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}</button> : <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>}<button className="secondary" onClick={clearCanvas}><Trash2 size={17} /> CLEAR</button><button className="secondary" onClick={exportDrawing}>EXPORT PNG</button></div>
+          {!cameraOn && !error && <div className="permission-note"><ShieldCheck size={16} /><span>Press Open Camera. Your browser will ask for permission.</span></div>}{error && <p className="error-box">{error}</p>}
         </div>
-
-        <div className="workspace">
-          <div className="workspace-head"><div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div><div className="metrics"><span>{tracking ? 'TRACKING INDEX' : gestureLabel}</span><b>{strokes} pts</b></div></div>
-          <div className="stage">
-            <video ref={videoRef} className="camera" playsInline muted autoPlay />
-            <canvas ref={canvasRef} className="drawing-layer" />
-            {!cameraOn && <div className="stage-empty"><div className="empty-icon"><Hand size={34} strokeWidth={1.3} /></div><strong>Open your camera to start</strong><span>Press Open Camera and allow access.</span></div>}
-            {cameraOn && loadingVision && !error && <div className="vision-loading"><Circle className="spin" size={18} /><span>Loading hand tracking…</span></div>}
-            <div className={`tracking-pill ${tracking ? 'active' : ''}`}><span />{tracking ? 'INDEX DETECTED · DRAWING' : gestureLabel}</div>
-          </div>
+        <div className="workspace"><div className="workspace-head"><div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div><div className="metrics"><span>{tracking ? 'FINGERTIP LOCKED' : gestureLabel}</span><b>{strokes} pts</b></div></div>
+          <div className="stage"><video ref={videoRef} className="camera" playsInline muted autoPlay /><canvas ref={canvasRef} className="drawing-layer" />{pointer && cameraOn && <div className={`finger-cursor ${tracking ? 'drawing' : ''}`} style={{ left: pointer.x, top: pointer.y }}><span /></div>}{!cameraOn && <div className="stage-empty"><div className="empty-icon"><Hand size={34} strokeWidth={1.3} /></div><strong>Open your camera to start</strong><span>Press Open Camera and allow access.</span></div>}{cameraOn && loadingVision && !error && <div className="vision-loading"><Circle className="spin" size={18} /><span>Learning your hand…</span></div>}<div className={`tracking-pill ${tracking ? 'active' : ''}`}><span />{tracking ? 'FINGERTIP LOCKED · DRAWING' : gestureLabel}</div></div>
         </div>
       </section>
-
-      <section className="gesture-guide">
-        <div className="guide-heading"><span>GESTURE GUIDE</span><b>Three gestures. That's it.</b></div>
-        <div className="gesture-grid">
-          <div className={`gesture-card ${gesture === 'draw' ? 'active' : ''}`}><div className="gesture-visual">☝</div><div><strong>DRAW</strong><span>One finger up. Move your index fingertip to write.</span></div></div>
-          <div className={`gesture-card ${gesture === 'pause' ? 'active' : ''}`}><div className="gesture-visual">✊</div><div><strong>PAUSE</strong><span>Make a fist. The current stroke stops immediately.</span></div></div>
-          <div className={`gesture-card ${gesture === 'clear' ? 'active' : ''}`}><div className="gesture-visual">🖐</div><div><strong>CLEAR</strong><span>Hold an open palm for about one second to clear.</span></div></div>
-        </div>
-      </section>
-
-      <section className="tool-panel">
-        <div className="tool-group"><span className="tool-title">BRUSH</span><div className="brush-row">{[3, 6, 10, 16].map((size) => <button key={size} className={`brush ${brushSize === size ? 'selected' : ''}`} onClick={() => setBrushSize(size)}><span style={{ width: size, height: size }} /></button>)}</div></div>
-        <div className="tool-group"><span className="tool-title">INK</span><div className="color-row">{['#ffffff', '#8bffb0', '#75a7ff', '#ff7e9f', '#ffd166'].map((color) => <button key={color} aria-label={`Select ${color}`} className={`color ${brushColor === color ? 'selected' : ''}`} style={{ background: color }} onClick={() => setBrushColor(color)} />)}</div></div>
-        <div className="gesture-note"><Pause size={15} /><span><b>Quick controls:</b> ☝ draw · ✊ pause · 🖐 hold to clear</span></div>
-        <div className="tech-stack">MEDIA PIPE · CANVAS 2D · REACT · JAVASCRIPT</div>
-      </section>
+      <section className="gesture-guide"><div className="guide-heading"><span>LEARN THE GESTURES</span><b>Start simple. Improve every session.</b></div><div className="gesture-grid"><div className={`gesture-card ${gesture === 'draw' ? 'active' : ''}`}><div className="gesture-visual">☝</div><div><strong>DRAW</strong><span>Raise one index finger and move slowly to start writing.</span></div></div><div className={`gesture-card ${gesture === 'pause' ? 'active' : ''}`}><div className="gesture-visual">✊</div><div><strong>PAUSE</strong><span>Make a fist. Your stroke stops without clearing the canvas.</span></div></div><div className={`gesture-card ${gesture === 'clear' ? 'active' : ''}`}><div className="gesture-visual">🖐</div><div><strong>CLEAR</strong><span>Hold an open palm for about one second to clear.</span></div></div></div></section>
+      <section className="tool-panel"><div className="tool-group"><span className="tool-title">BRUSH</span><div className="brush-row">{[3, 6, 10, 16].map((size) => <button key={size} className={`brush ${brushSize === size ? 'selected' : ''}`} onClick={() => setBrushSize(size)}><span style={{ width: size, height: size }} /></button>)}</div></div><div className="tool-group"><span className="tool-title">INK</span><div className="color-row">{['#ffffff', '#8bffb0', '#75a7ff', '#ff7e9f', '#ffd166'].map((color) => <button key={color} aria-label={`Select ${color}`} className={`color ${brushColor === color ? 'selected' : ''}`} style={{ background: color }} onClick={() => setBrushColor(color)} />)}</div></div><div className="tech-stack">MEDIAPIPE · CANVAS 2D · REACT · JAVASCRIPT</div></section>
       <footer className="footer">Made by - Amar</footer>
     </main>
   );
