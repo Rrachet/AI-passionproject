@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { Camera, Circle, Hand, Play, RotateCcw, Sparkles, Trash2, ShieldCheck } from 'lucide-react';
+import { Camera, Circle, Hand, Play, RotateCcw, Sparkles, Trash2, ShieldCheck, AlertTriangle } from 'lucide-react';
 import './styles.css';
 
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
@@ -20,6 +20,7 @@ function App() {
   const [cameraOn, setCameraOn] = useState(false);
   const [tracking, setTracking] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [visionLoading, setVisionLoading] = useState(false);
   const [error, setError] = useState('');
   const [permissionState, setPermissionState] = useState('prompt');
   const [brushSize, setBrushSize] = useState(6);
@@ -105,7 +106,12 @@ function App() {
   const detectLoop = useCallback(() => {
     const video = videoRef.current;
     const landmarker = handLandmarkerRef.current;
-    if (!video || !landmarker || video.readyState < 2 || !cameraOn) return;
+    if (!video || !cameraOn) return;
+
+    if (!landmarker || video.readyState < 2) {
+      frameRef.current = requestAnimationFrame(detectLoop);
+      return;
+    }
 
     const timestamp = performance.now();
     if (timestamp <= lastTimestampRef.current) {
@@ -139,22 +145,25 @@ function App() {
   };
 
   const startCamera = async () => {
+    if (loading) return;
+
     if (!navigator.mediaDevices?.getUserMedia) {
-      setError('Camera access is not supported by this browser. Open AirCanvas in Chrome, Safari, or another modern browser.');
+      setError('Camera access is not available here. Open this site in a modern browser over HTTPS.');
       return;
     }
 
     if (!window.isSecureContext) {
-      setError('Camera access requires HTTPS. Open the deployed AirCanvas link, not an insecure HTTP page.');
+      setError('Camera access requires HTTPS. Open the deployed site instead of an insecure HTTP page.');
       return;
     }
 
     try {
       setError('');
       setLoading(true);
-      setPermissionState('prompt');
 
-      // Ask for camera permission FIRST. The browser owns the permission dialog.
+      // Camera permission must be requested directly from the user's button click.
+      // Do not initialize MediaPipe before this request: the camera should appear
+      // immediately after the browser permission is granted.
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -166,26 +175,52 @@ function App() {
 
       setPermissionState('granted');
       streamRef.current = stream;
-      videoRef.current.srcObject = stream;
-      await videoRef.current.play();
 
-      // Only load computer vision after the user has granted camera access.
-      await initializeHandLandmarker();
+      const video = videoRef.current;
+      if (!video) throw new Error('Camera preview element is unavailable.');
+
+      video.srcObject = stream;
+      await video.play();
+
+      // Camera is now considered live. The AI model loads independently.
       setCameraOn(true);
-      requestAnimationFrame(() => setupCanvas());
+      setLoading(false);
+      requestAnimationFrame(setupCanvas);
+
+      const [track] = stream.getVideoTracks();
+      if (track) {
+        track.addEventListener('ended', () => {
+          setCameraOn(false);
+          setTracking(false);
+          setError('The camera was stopped by the browser or device. Press Open Camera to reconnect.');
+        }, { once: true });
+      }
+
+      // Do not block camera display while MediaPipe downloads/initializes.
+      setVisionLoading(true);
+      try {
+        await initializeHandLandmarker();
+      } catch (visionError) {
+        console.error('MediaPipe initialization error:', visionError);
+        setError('Camera is working, but hand tracking could not load. Refresh the page and try again.');
+      } finally {
+        setVisionLoading(false);
+      }
     } catch (err) {
       console.error('Camera startup error:', err);
       setCameraOn(false);
 
       if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
         setPermissionState('denied');
-        setError('Camera permission was denied. Allow camera access in your browser settings, then press Open Camera again.');
-      } else if (err?.name === 'NotFoundError') {
-        setError('No camera was found on this device.');
-      } else if (err?.name === 'NotReadableError') {
+        setError('Camera permission is blocked. Allow camera access for this site, then press Open Camera again.');
+      } else if (err?.name === 'NotFoundError' || err?.name === 'DevicesNotFoundError') {
+        setError('No camera was found on this device. Connect a camera and try again.');
+      } else if (err?.name === 'NotReadableError' || err?.name === 'TrackStartError') {
         setError('The camera is already being used by another app or browser tab. Close it and try again.');
+      } else if (err?.name === 'OverconstrainedError') {
+        setError('The selected camera settings are unavailable. Try again or choose another camera in your browser.');
       } else {
-        setError('We could not start the camera. Check your browser permissions and try again.');
+        setError('We could not start the camera. Check browser camera permissions and try again.');
       }
 
       streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -195,8 +230,9 @@ function App() {
     }
   };
 
-  const stopCamera = () => {
+  const stopCamera = useCallback(() => {
     if (frameRef.current) cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
@@ -204,7 +240,8 @@ function App() {
     smoothingRef.current = null;
     setTracking(false);
     setCameraOn(false);
-  };
+    setVisionLoading(false);
+  }, []);
 
   const downloadDrawing = () => {
     const canvas = canvasRef.current;
@@ -216,7 +253,9 @@ function App() {
   };
 
   useEffect(() => {
-    if (cameraOn) frameRef.current = requestAnimationFrame(detectLoop);
+    if (cameraOn) {
+      frameRef.current = requestAnimationFrame(detectLoop);
+    }
     return () => {
       if (frameRef.current) cancelAnimationFrame(frameRef.current);
     };
@@ -234,8 +273,8 @@ function App() {
   }, []);
 
   const permissionMessage = permissionState === 'denied'
-    ? 'Camera permission is blocked. Enable it in your browser settings, then try again.'
-    : 'Your browser will ask for camera permission after you press Open Camera.';
+    ? 'Camera permission is blocked. Allow access in your browser site settings, then press Open Camera.'
+    : 'Click Open Camera. Your browser will ask for permission before the camera starts.';
 
   return (
     <main className="app-shell">
@@ -258,11 +297,12 @@ function App() {
           <p className="eyebrow">REAL-TIME COMPUTER VISION</p>
           <h1>Draw with<br /><em>your hand.</em></h1>
           <p className="lede">Point one finger at the camera. AirCanvas tracks your fingertip and turns every movement into a live digital stroke.</p>
+
           <div className="controls">
             {!cameraOn ? (
               <button className="primary" onClick={startCamera} disabled={loading}>
-                {loading ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}
-                {loading ? 'REQUESTING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}
+                {loading ? <Circle className="spin" size={17} /> : <Camera size={17} />}
+                {loading ? 'OPENING CAMERA...' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}
               </button>
             ) : (
               <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>
@@ -277,26 +317,44 @@ function App() {
               <span>{permissionMessage}</span>
             </div>
           )}
-          {error && <p className="error">{error}</p>}
+          {error && (
+            <div className="error-box">
+              <AlertTriangle size={15} />
+              <p>{error}</p>
+            </div>
+          )}
         </div>
 
         <div className="workspace">
           <div className="workspace-head">
             <div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div>
-            <div className="metrics"><span>{tracking ? 'TRACKING INDEX' : 'WAITING FOR HAND'}</span><b>{strokes} pts</b></div>
+            <div className="metrics"><span>{tracking ? 'TRACKING INDEX' : visionLoading ? 'LOADING VISION' : cameraOn ? 'CAMERA READY' : 'WAITING FOR CAMERA'}</span><b>{strokes} pts</b></div>
           </div>
+
           <div className="stage">
-            <video ref={videoRef} className="camera" playsInline muted />
+            <video ref={videoRef} className="camera" playsInline muted autoPlay />
             <canvas ref={canvasRef} className="drawing-layer" />
+
             {!cameraOn && (
               <div className="stage-empty">
-                <div className="empty-icon"><Hand size={34} strokeWidth={1.3} /></div>
-                <strong>Camera feed is offline</strong>
-                <span>Press Open Camera and allow access to begin.</span>
+                <div className="empty-icon"><Camera size={34} strokeWidth={1.3} /></div>
+                <strong>Open your camera to start</strong>
+                <span>Press Open Camera below and allow camera access when your browser asks.</span>
+                <button className="stage-cta" onClick={startCamera} disabled={loading}>
+                  {loading ? 'Opening camera...' : 'Open Camera'}
+                </button>
               </div>
             )}
+
+            {cameraOn && visionLoading && (
+              <div className="vision-loading">
+                <Circle className="spin" size={15} />
+                <span>Camera is live · loading hand tracking...</span>
+              </div>
+            )}
+
             <div className={`tracking-pill ${tracking ? 'active' : ''}`}>
-              <span /> {tracking ? 'INDEX DETECTED' : 'NO HAND DETECTED'}
+              <span /> {tracking ? 'INDEX DETECTED' : cameraOn ? 'SHOW ONE FINGER' : 'CAMERA OFF'}
             </div>
           </div>
         </div>
@@ -327,6 +385,8 @@ function App() {
         </div>
         <div className="tech-stack">MEDIA PIPE · CANVAS 2D · REACT · JAVASCRIPT</div>
       </section>
+
+      <footer className="footer">Made by - Amar</footer>
     </main>
   );
 }
