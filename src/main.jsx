@@ -1,14 +1,29 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
-import { Camera, Circle, Hand, Play, RotateCcw, Sparkles, Trash2, ShieldCheck } from 'lucide-react';
+import { Camera, Circle, Hand, Play, Sparkles, Trash2, ShieldCheck, Pause } from 'lucide-react';
 import './styles.css';
 
-// MediaPipe's documented web setup uses the Tasks Vision WASM bundle plus the official hand model.
-// Keep both pinned to the same known-good 0.10.x runtime and use CPU for broad mobile compatibility.
 const MP_VERSION = '0.10.35';
 const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+const TARGET_FPS = 30;
+
+function fingerExtended(hand, tip, pip) {
+  return hand[tip].y < hand[pip].y - 0.015;
+}
+
+function classifyGesture(hand) {
+  if (!hand || hand.length < 21) return 'none';
+  const index = fingerExtended(hand, 8, 6);
+  const middle = fingerExtended(hand, 12, 10);
+  const ring = fingerExtended(hand, 16, 14);
+  const pinky = fingerExtended(hand, 20, 18);
+  if (!index && !middle && !ring && !pinky) return 'pause';
+  if (index && !middle && !ring && !pinky) return 'draw';
+  if (index && middle && ring && pinky) return 'clear';
+  return 'none';
+}
 
 function App() {
   const videoRef = useRef(null);
@@ -19,6 +34,9 @@ function App() {
   const previousPointRef = useRef(null);
   const smoothPointRef = useRef(null);
   const lastVideoTimeRef = useRef(-1);
+  const lastDetectionRef = useRef(0);
+  const clearHoldRef = useRef(0);
+  const lastClearRef = useRef(0);
   const mountedRef = useRef(true);
 
   const [cameraOn, setCameraOn] = useState(false);
@@ -31,13 +49,14 @@ function App() {
   const [brushSize, setBrushSize] = useState(6);
   const [brushColor, setBrushColor] = useState('#ffffff');
   const [strokes, setStrokes] = useState(0);
+  const [gesture, setGesture] = useState('none');
 
   const setupCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video) return;
     const rect = video.getBoundingClientRect();
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.max(1, Math.round(rect.width * dpr));
     canvas.height = Math.max(1, Math.round(rect.height * dpr));
     canvas.style.width = `${rect.width}px`;
@@ -51,36 +70,52 @@ function App() {
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    canvas.getContext('2d').clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
     previousPointRef.current = null;
     smoothPointRef.current = null;
     setStrokes(0);
   }, []);
 
-  const indexOnly = (hand) => {
-    if (!hand || hand.length < 21) return false;
-    // Only draw when the index is extended and the other three fingers are folded.
-    return hand[8].y < hand[6].y && hand[12].y > hand[10].y && hand[16].y > hand[14].y && hand[20].y > hand[18].y;
-  };
+  const handleGesture = useCallback((nextGesture) => {
+    const now = performance.now();
+    setGesture(nextGesture);
+    if (nextGesture === 'draw') return;
+
+    previousPointRef.current = null;
+    smoothPointRef.current = null;
+    setTracking(false);
+
+    if (nextGesture === 'clear') {
+      if (!clearHoldRef.current) clearHoldRef.current = now;
+      if (now - clearHoldRef.current >= 850 && now - lastClearRef.current >= 1400) {
+        lastClearRef.current = now;
+        clearHoldRef.current = 0;
+        clearCanvas();
+      }
+    } else {
+      clearHoldRef.current = 0;
+    }
+  }, [clearCanvas]);
 
   const drawResult = useCallback((result) => {
     const canvas = canvasRef.current;
     const hand = result?.landmarks?.[0];
-    if (!canvas || !hand || !indexOnly(hand)) {
-      previousPointRef.current = null;
-      smoothPointRef.current = null;
-      setTracking(false);
+    if (!canvas || !hand) {
+      handleGesture('none');
       return;
     }
+
+    const nextGesture = classifyGesture(hand);
+    handleGesture(nextGesture);
+    if (nextGesture !== 'draw') return;
 
     const width = canvas.clientWidth;
     const height = canvas.clientHeight;
     const target = { x: (1 - hand[8].x) * width, y: hand[8].y * height };
-    const previousSmooth = smoothPointRef.current || target;
+    const previous = smoothPointRef.current || target;
     const point = {
-      x: previousSmooth.x * 0.72 + target.x * 0.28,
-      y: previousSmooth.y * 0.72 + target.y * 0.28,
+      x: previous.x * 0.55 + target.x * 0.45,
+      y: previous.y * 0.55 + target.y * 0.45,
     };
     smoothPointRef.current = point;
 
@@ -96,18 +131,20 @@ function App() {
     }
     previousPointRef.current = point;
     setTracking(true);
-  }, [brushColor, brushSize]);
+  }, [brushColor, brushSize, handleGesture]);
 
   const processFrames = useCallback(() => {
+    if (!cameraOn) return;
     const video = videoRef.current;
     const landmarker = landmarkerRef.current;
-    if (!cameraOn) return;
+    const now = performance.now();
+    const minInterval = 1000 / TARGET_FPS;
 
-    if (video && landmarker && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime !== lastVideoTimeRef.current) {
+    if (video && landmarker && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.currentTime !== lastVideoTimeRef.current && now - lastDetectionRef.current >= minInterval) {
       lastVideoTimeRef.current = video.currentTime;
+      lastDetectionRef.current = now;
       try {
-        const result = landmarker.detectForVideo(video, performance.now());
-        drawResult(result);
+        drawResult(landmarker.detectForVideo(video, now));
       } catch (err) {
         console.error('MediaPipe frame error:', err);
       }
@@ -115,30 +152,37 @@ function App() {
     frameRef.current = requestAnimationFrame(processFrames);
   }, [cameraOn, drawResult]);
 
+  const createLandmarker = async (delegate) => {
+    const vision = await FilesetResolver.forVisionTasks(WASM_URL);
+    return HandLandmarker.createFromOptions(vision, {
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      runningMode: 'VIDEO',
+      numHands: 1,
+      minHandDetectionConfidence: 0.4,
+      minHandPresenceConfidence: 0.4,
+      minTrackingConfidence: 0.4,
+    });
+  };
+
   const initializeVision = async () => {
     if (landmarkerRef.current) return landmarkerRef.current;
     setLoadingVision(true);
     setError('');
-
     try {
-      const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-      // CPU is intentional: it is the most portable delegate across desktop and mobile browsers.
-      const landmarker = await HandLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'CPU' },
-        runningMode: 'VIDEO',
-        numHands: 1,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-      landmarkerRef.current = landmarker;
+      try {
+        landmarkerRef.current = await createLandmarker('GPU');
+      } catch (gpuError) {
+        console.warn('GPU unavailable; falling back to CPU.', gpuError);
+        landmarkerRef.current = await createLandmarker('CPU');
+      }
       if (mountedRef.current) {
         setVisionReady(true);
         setLoadingVision(false);
       }
-      return landmarker;
+      return landmarkerRef.current;
     } catch (err) {
       console.error('MediaPipe initialization failed:', err);
+      landmarkerRef.current = null;
       if (mountedRef.current) {
         setLoadingVision(false);
         setVisionReady(false);
@@ -157,28 +201,21 @@ function App() {
       setError('Camera access requires HTTPS. Open the deployed AirCanvas website.');
       return;
     }
-
     try {
       setError('');
       setLoadingCamera(true);
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: 'user' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        video: { facingMode: { ideal: 'user' }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30, max: 30 } },
         audio: false,
       });
-
       streamRef.current = stream;
       setPermissionState('granted');
       const video = videoRef.current;
       video.srcObject = stream;
-      video.onloadedmetadata = () => {
-        video.play().catch((err) => console.error('Video play failed:', err));
-        requestAnimationFrame(setupCanvas);
-      };
       await video.play();
       setCameraOn(true);
       setLoadingCamera(false);
-
-      // Start vision separately from camera startup. The camera stays visible while the model loads.
+      requestAnimationFrame(setupCanvas);
       initializeVision();
     } catch (err) {
       console.error('Camera startup failed:', err);
@@ -202,7 +239,10 @@ function App() {
     previousPointRef.current = null;
     smoothPointRef.current = null;
     lastVideoTimeRef.current = -1;
+    lastDetectionRef.current = 0;
+    clearHoldRef.current = 0;
     setTracking(false);
+    setGesture('none');
     setCameraOn(false);
     setVisionReady(false);
     setLoadingVision(false);
@@ -234,6 +274,8 @@ function App() {
     landmarkerRef.current?.close();
   }, []);
 
+  const gestureLabel = gesture === 'draw' ? 'DRAWING' : gesture === 'pause' ? 'PAUSED — FIST' : gesture === 'clear' ? 'CLEAR — HOLD PALM' : visionReady ? 'SHOW A GESTURE' : loadingVision ? 'VISION LOADING' : 'VISION OFFLINE';
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -245,7 +287,7 @@ function App() {
         <div className="hero-copy">
           <p className="eyebrow">REAL-TIME COMPUTER VISION</p>
           <h1>Draw with<br /><em>your hand.</em></h1>
-          <p className="lede">Point one finger at the camera. AirCanvas tracks your fingertip and turns every movement into a live digital stroke.</p>
+          <p className="lede">Write naturally in the air. AirCanvas tracks your index fingertip in real time and turns your movement into a clean digital stroke.</p>
           <div className="controls">
             {!cameraOn ? <button className="primary" onClick={startCamera} disabled={loadingCamera}>{loadingCamera ? <Circle className="spin" size={17} /> : <Play size={17} fill="currentColor" />}{loadingCamera ? 'OPENING CAMERA' : permissionState === 'denied' ? 'TRY CAMERA AGAIN' : 'OPEN CAMERA'}</button> : <button className="primary stop" onClick={stopCamera}><Camera size={17} /> STOP CAMERA</button>}
             <button className="secondary" onClick={clearCanvas}><Trash2 size={17} /> CLEAR</button>
@@ -256,21 +298,30 @@ function App() {
         </div>
 
         <div className="workspace">
-          <div className="workspace-head"><div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div><div className="metrics"><span>{tracking ? 'TRACKING INDEX' : loadingVision ? 'LOADING VISION' : visionReady ? 'SHOW ONE FINGER' : cameraOn ? 'VISION OFFLINE' : 'STANDBY'}</span><b>{strokes} pts</b></div></div>
+          <div className="workspace-head"><div className="workspace-label"><Hand size={15} /> LIVE DRAWING SURFACE</div><div className="metrics"><span>{tracking ? 'TRACKING INDEX' : gestureLabel}</span><b>{strokes} pts</b></div></div>
           <div className="stage">
             <video ref={videoRef} className="camera" playsInline muted autoPlay />
             <canvas ref={canvasRef} className="drawing-layer" />
             {!cameraOn && <div className="stage-empty"><div className="empty-icon"><Hand size={34} strokeWidth={1.3} /></div><strong>Open your camera to start</strong><span>Press Open Camera and allow access.</span></div>}
             {cameraOn && loadingVision && !error && <div className="vision-loading"><Circle className="spin" size={18} /><span>Loading hand tracking…</span></div>}
-            <div className={`tracking-pill ${tracking ? 'active' : ''}`}><span />{tracking ? 'INDEX DETECTED' : visionReady ? 'SHOW ONE FINGER' : loadingVision ? 'VISION LOADING' : 'VISION OFFLINE'}</div>
+            <div className={`tracking-pill ${tracking ? 'active' : ''}`}><span />{tracking ? 'INDEX DETECTED · DRAWING' : gestureLabel}</div>
           </div>
+        </div>
+      </section>
+
+      <section className="gesture-guide">
+        <div className="guide-heading"><span>GESTURE GUIDE</span><b>Three gestures. That's it.</b></div>
+        <div className="gesture-grid">
+          <div className={`gesture-card ${gesture === 'draw' ? 'active' : ''}`}><div className="gesture-visual">☝</div><div><strong>DRAW</strong><span>One finger up. Move your index fingertip to write.</span></div></div>
+          <div className={`gesture-card ${gesture === 'pause' ? 'active' : ''}`}><div className="gesture-visual">✊</div><div><strong>PAUSE</strong><span>Make a fist. The current stroke stops immediately.</span></div></div>
+          <div className={`gesture-card ${gesture === 'clear' ? 'active' : ''}`}><div className="gesture-visual">🖐</div><div><strong>CLEAR</strong><span>Hold an open palm for about one second to clear.</span></div></div>
         </div>
       </section>
 
       <section className="tool-panel">
         <div className="tool-group"><span className="tool-title">BRUSH</span><div className="brush-row">{[3, 6, 10, 16].map((size) => <button key={size} className={`brush ${brushSize === size ? 'selected' : ''}`} onClick={() => setBrushSize(size)}><span style={{ width: size, height: size }} /></button>)}</div></div>
         <div className="tool-group"><span className="tool-title">INK</span><div className="color-row">{['#ffffff', '#8bffb0', '#75a7ff', '#ff7e9f', '#ffd166'].map((color) => <button key={color} aria-label={`Select ${color}`} className={`color ${brushColor === color ? 'selected' : ''}`} style={{ background: color }} onClick={() => setBrushColor(color)} />)}</div></div>
-        <div className="gesture-note"><RotateCcw size={16} /><span><b>Gesture:</b> one finger extended = draw · fold it = pause</span></div>
+        <div className="gesture-note"><Pause size={15} /><span><b>Quick controls:</b> ☝ draw · ✊ pause · 🖐 hold to clear</span></div>
         <div className="tech-stack">MEDIA PIPE · CANVAS 2D · REACT · JAVASCRIPT</div>
       </section>
       <footer className="footer">Made by - Amar</footer>
