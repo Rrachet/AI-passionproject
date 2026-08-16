@@ -42,6 +42,9 @@ button:disabled { opacity: .65; cursor: wait; }
 .stage { position: relative; width: 100%; aspect-ratio: 16 / 9; min-height: 420px; overflow: hidden; border: 1px solid #292929; border-radius: 14px; background: #0b0b0b; box-shadow: 0 24px 70px #0008; }
 .camera { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); opacity: 1; filter: none; background: #000; }
 .drawing-layer { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; pointer-events: none; }
+.finger-cursor { position: absolute; z-index: 4; width: 24px; height: 24px; margin: -12px 0 0 -12px; border: 1.5px solid #9dffbd; border-radius: 50%; pointer-events: none; box-shadow: 0 0 0 4px #9dffbd22, 0 0 18px #9dffbd66; transition: left .025s linear, top .025s linear; }
+.finger-cursor span { position: absolute; width: 5px; height: 5px; left: 50%; top: 50%; transform: translate(-50%, -50%); border-radius: 50%; background: #9dffbd; }
+.finger-cursor.drawing { border-color: #fff; box-shadow: 0 0 0 5px #ffffff18, 0 0 20px #9dffbd88; }
 .stage::after { content: ''; position: absolute; inset: 0; z-index: 2; pointer-events: none; background: linear-gradient(180deg, #00000008, transparent 35%, #00000018); }
 .stage-empty { position: absolute; inset: 0; z-index: 4; display: grid; place-content: center; justify-items: center; gap: 10px; text-align: center; color: #777; background: radial-gradient(circle at center, #121212, #090909 60%); padding: 20px; }
 .empty-icon { display: grid; place-items: center; width: 70px; height: 70px; margin-bottom: 4px; border: 1px solid #292929; border-radius: 50%; color: #777; }
