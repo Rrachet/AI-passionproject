@@ -8,19 +8,14 @@ const MP_VERSION = '0.10.35';
 const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const BACKEND_WS = import.meta.env.VITE_VISION_WS_URL || '';
-const MODES = {
-  draw: { label: 'Draw', icon: PenLine, hint: 'Freehand ink' },
-  shape: { label: 'Shape', icon: Sparkles, hint: 'Perfect geometry' },
-  pointer: { label: 'Pointer', icon: MousePointer2, hint: 'Point anywhere' },
-  laser: { label: 'Laser', icon: Zap, hint: 'Highlight briefly' }
-};
-const dist = (a,b) => Math.hypot(a.x-b.x,a.y-b.y);
+const MODES = { draw:{label:'Draw',icon:PenLine}, shape:{label:'Shape',icon:Sparkles}, pointer:{label:'Pointer',icon:MousePointer2}, laser:{label:'Laser',icon:Zap} };
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
 function angle(a,b,c){const ab={x:a.x-b.x,y:a.y-b.y},cb={x:c.x-b.x,y:c.y-b.y},d=(Math.hypot(ab.x,ab.y)*Math.hypot(cb.x,cb.y))||1;return Math.acos(Math.max(-1,Math.min(1,(ab.x*cb.x+ab.y*cb.y)/d)))*180/Math.PI}
-function fingerExtended(h,m,p,t){const pip=angle(h[m],h[p],h[t]);const reach=dist(h[m],h[t]);const segment=dist(h[m],h[p]);return pip>138&&reach>segment*1.03}
+function fingerExtended(h,m,p,t){return angle(h[m],h[p],h[t])>138&&dist(h[m],h[t])>dist(h[m],h[p])*1.03}
 function classifyGesture(h){if(!h||h.length!==21)return'none';const i=fingerExtended(h,5,6,8),m=fingerExtended(h,9,10,12),r=fingerExtended(h,13,14,16),p=fingerExtended(h,17,18,20);if(i&&!m&&!r&&!p)return'draw';if(i&&m&&r&&p)return'clear';if(!i&&!m&&!r&&!p)return'pause';return'none'}
 function perpendicular(p,a,b){const dx=b.x-a.x,dy=b.y-a.y;if(!dx&&!dy)return dist(p,a);return Math.abs(dy*p.x-dx*p.y+b.x*a.y-b.y*a.x)/Math.hypot(dx,dy)}
 function simplify(points,epsilon){if(points.length<=2)return points.slice();let best=1,max=perpendicular(points[1],points[0],points.at(-1));for(let i=2;i<points.length-1;i++){const d=perpendicular(points[i],points[0],points.at(-1));if(d>max){max=d;best=i}}if(max>epsilon)return simplify(points.slice(0,best+1),epsilon).slice(0,-1).concat(simplify(points.slice(best),epsilon));return[points[0],points.at(-1)]}
-function detectShape(points){if(points.length<12)return null;const start=points[0],end=points.at(-1),xs=points.map(p=>p.x),ys=points.map(p=>p.y),minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys),scale=Math.max(maxX-minX,maxY-minY,1);if(dist(start,end)>scale*.28)return{type:'line',from:start,to:end,sides:2};const ring=points.slice(0,-1),cx=ring.reduce((s,p)=>s+p.x,0)/ring.length,cy=ring.reduce((s,p)=>s+p.y,0)/ring.length,radius=ring.reduce((s,p)=>s+Math.hypot(p.x-cx,p.y-cy),0)/ring.length;if(radius<4)return null;const radial=ring.map(p=>Math.hypot(p.x-cx,p.y-cy)),mean=radial.reduce((s,v)=>s+v,0)/radial.length,radialError=Math.sqrt(radial.reduce((s,v)=>s+(v-mean)**2,0)/radial.length)/Math.max(mean,1);let corners=simplify(ring.concat([ring[0]]),Math.max(4,scale*.075));if(corners.length>1&&dist(corners[0],corners.at(-1))<scale*.2)corners=corners.slice(0,-1);let n=Math.max(3,Math.min(12,corners.length));if(radialError<.10||n>=9)n=64;if(n===64)return{type:'circle',cx,cy,r:radius,sides:0};const startAngle=Math.atan2(corners[0].y-cy,corners[0].x-cx),vertices=Array.from({length:n},(_,i)=>({x:cx+radius*Math.cos(startAngle+2*Math.PI*i/n),y:cy+radius*Math.sin(startAngle+2*Math.PI*i/n)}));return{type:n===3?'triangle':n===4?'square':n===5?'pentagon':n===6?'hexagon':n===7?'heptagon':n===8?'octagon':`${n}-gon`,sides:n,vertices}}
+function detectShape(points){if(points.length<12)return null;const start=points[0],end=points.at(-1),xs=points.map(p=>p.x),ys=points.map(p=>p.y),scale=Math.max(Math.max(...xs)-Math.min(...xs),Math.max(...ys)-Math.min(...ys),1);if(dist(start,end)>scale*.28)return{type:'line',from:start,to:end,sides:2};const ring=points.slice(0,-1),cx=ring.reduce((s,p)=>s+p.x,0)/ring.length,cy=ring.reduce((s,p)=>s+p.y,0)/ring.length,radius=ring.reduce((s,p)=>s+Math.hypot(p.x-cx,p.y-cy),0)/ring.length;if(radius<4)return null;const radial=ring.map(p=>Math.hypot(p.x-cx,p.y-cy)),mean=radial.reduce((s,v)=>s+v,0)/radial.length,radialError=Math.sqrt(radial.reduce((s,v)=>s+(v-mean)**2,0)/radial.length)/Math.max(mean,1);let corners=simplify(ring.concat([ring[0]]),Math.max(4,scale*.075));if(corners.length>1&&dist(corners[0],corners.at(-1))<scale*.2)corners=corners.slice(0,-1);let n=Math.max(3,Math.min(12,corners.length));if(radialError<.10||n>=9)n=64;if(n===64)return{type:'circle',cx,cy,r:radius,sides:0};const startAngle=Math.atan2(corners[0].y-cy,corners[0].x-cx),vertices=Array.from({length:n},(_,i)=>({x:cx+radius*Math.cos(startAngle+2*Math.PI*i/n),y:cy+radius*Math.sin(startAngle+2*Math.PI*i/n)})),names={3:'triangle',4:'square',5:'pentagon',6:'hexagon',7:'heptagon',8:'octagon'};return{type:names[n]||`${n}-gon`,sides:n,vertices}}
 
 function App(){
  const video=useRef(null),canvas=useRef(null),tracker=useRef(null),stream=useRef(null),raf=useRef(null),previous=useRef(null),smooth=useRef(null),points=useRef([]),lastFrame=useRef(0),lastSeen=useRef(0),clearAt=useRef(0),trail=useRef([]),gestureHistory=useRef([]),stableGesture=useRef('none'),ws=useRef(null),backendGesture=useRef('');
@@ -31,7 +26,7 @@ function App(){
  const laser=useCallback(p=>{const c=canvas.current,x=c?.getContext('2d');if(!x)return;trail.current.push({...p,t:performance.now()});trail.current=trail.current.slice(-30);x.clearRect(0,0,c.clientWidth,c.clientHeight);for(let i=1;i<trail.current.length;i++){const a=trail.current[i-1],b=trail.current[i],alpha=Math.max(0,1-(performance.now()-b.t)/600);x.save();x.globalAlpha=alpha;x.strokeStyle='#e97878';x.shadowColor='#e97878';x.shadowBlur=14;x.lineWidth=3+alpha*4;x.lineCap='round';x.beginPath();x.moveTo(a.x,a.y);x.lineTo(b.x,b.y);x.stroke();x.restore()}},[]);
  const align=useCallback(()=>{if(mode!=='shape'||points.current.length<12)return;const s=detectShape(points.current),x=canvas.current?.getContext('2d');if(!s||!x)return;x.save();x.strokeStyle='#d8e6c9';x.lineWidth=5;x.lineCap='round';x.lineJoin='round';x.shadowColor='#d8e6c9';x.shadowBlur=8;x.beginPath();if(s.type==='circle')x.arc(s.cx,s.cy,s.r,0,Math.PI*2);else if(s.type==='line'){x.moveTo(s.from.x,s.from.y);x.lineTo(s.to.x,s.to.y)}else{s.vertices.forEach((p,i)=>i?x.lineTo(p.x,p.y):x.moveTo(p.x,p.y));x.closePath()}x.stroke();x.restore();setAligned(`${s.type} aligned${s.sides?` · ${s.sides} sides`:''}`);points.current=[]},[mode]);
  const init=async delegate=>{const vision=await FilesetResolver.forVisionTasks(WASM_URL);return HandLandmarker.createFromOptions(vision,{baseOptions:{modelAssetPath:MODEL_URL,delegate},runningMode:'VIDEO',numHands:1,minHandDetectionConfidence:.22,minHandPresenceConfidence:.22,minTrackingConfidence:.22})};
- const openBackend=useCallback(()=>{if(!BACKEND_WS||typeof WebSocket==='undefined')return;try{const socket=new WebSocket(BACKEND_WS);socket.onmessage=e=>{try{const data=JSON.parse(e.data);backendGesture.current=String(data.gesture||'').toLowerCase()}catch{}};socket.onerror=()=>socket.close();ws.current=socket}catch{ws.current=null}},[]);
+ const openBackend=useCallback(()=>{if(!BACKEND_WS||typeof WebSocket==='undefined')return;try{const socket=new WebSocket(BACKEND_WS);socket.onmessage=e=>{try{backendGesture.current=String(JSON.parse(e.data).gesture||'').toLowerCase()}catch{}};socket.onerror=()=>socket.close();ws.current=socket}catch{ws.current=null}},[]);
  const closeBackend=useCallback(()=>{if(ws.current){try{ws.current.close()}catch{}ws.current=null}backendGesture.current=''},[]);
  const stop=useCallback(()=>{if(raf.current)cancelAnimationFrame(raf.current);raf.current=null;closeBackend();stream.current?.getTracks().forEach(t=>t.stop());stream.current=null;if(video.current)video.current.srcObject=null;tracker.current?.close();tracker.current=null;setCamera(false);setReady(false);setTip(null);setG('none');previous.current=null;smooth.current=null;gestureHistory.current=[];stableGesture.current='none'},[closeBackend]);
  const start=async()=>{if(!navigator.mediaDevices?.getUserMedia)return setError('Camera access is not supported by this browser.');if(!window.isSecureContext)return setError('Camera access requires HTTPS.');try{setError('');setLoading(true);const s=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'user'},width:{ideal:1280},height:{ideal:720},frameRate:{ideal:30,max:30}},audio:false});stream.current=s;video.current.srcObject=s;await video.current.play();setCamera(true);setLoading(false);requestAnimationFrame(resize);try{tracker.current=await init('GPU')}catch(e){console.warn('GPU vision unavailable, using CPU',e);tracker.current=await init('CPU')}openBackend();setReady(true)}catch(e){setLoading(false);setError(e?.name==='NotAllowedError'?'Camera permission was denied. Allow camera access and try again.':e?.message||'Camera could not start.');stream.current?.getTracks().forEach(t=>t.stop());stream.current=null}};
@@ -43,38 +38,16 @@ function App(){
  useEffect(()=>()=>stop(),[stop]);
  const M=MODES[mode];
  return <main className="site">
-  <header className="nav">
-   <div className="wordmark"><span className="mark" aria-hidden="true">A</span><div><strong>AirCanvas</strong><small>gesture interface</small></div></div>
-   <div className={ready?'engine live':'engine'}><i/>{ready?'VISION LIVE':'READY'}</div>
-  </header>
-  <section className="hero">
-   <div className="hero-copy">
-    <p className="kicker">AIR CANVAS / 001</p>
-    <h1>Your hand.<br/><em>Your canvas.</em></h1>
-    <p className="lead">A camera-first interface for drawing, pointing and explaining ideas in the air.</p>
-    <div className="actions">
-     {!camera?<button className="start" onClick={start} disabled={loading}>{loading?<Circle className="spin" size={16}/>:<Play size={15} fill="currentColor"/>}{loading?'Starting camera':'Try AirCanvas'}</button>:<button className="stop" onClick={stop}><Square size={13} fill="currentColor"/> Stop camera</button>}
-    </div>
-    {error&&<p className="error">{error}</p>}
-   </div>
-   <div className="hero-camera">
-    <div className="camera-head"><div><span className="eyebrow">LIVE SURFACE</span><span className="camera-state"><i className={camera?'on':''}/>{camera?(ready?'Tracking':'Starting'):'Camera ready'}</span></div><span className="camera-index">01</span></div>
-    <div className="mode-dock" aria-label="AirCanvas modes">
-     {Object.entries(MODES).map(([key,item])=>{const I=item.icon;return <button key={key} className={mode===key?'active':''} onClick={()=>{setMode(key);previous.current=null;points.current=[];trail.current=[]}}><I size={15}/><span>{item.label}</span></button>})}
-    </div>
-    <div className="surface">
-     <video ref={video} className="video" playsInline muted autoPlay/>
-     <canvas ref={canvas} className="canvas"/>
-     {tip&&camera&&<div className={`reticle ${mode==='pointer'||g==='draw'?'active':''}`} style={{left:tip.x,top:tip.y}}><span/></div>}
-     {!camera&&<div className="empty"><div className="empty-icon"><Camera size={21}/></div><strong>Camera preview</strong><span>Allow access to begin</span></div>}
-     <div className="surface-label">{camera?`${M.label.toUpperCase()} / ${mode==='pointer'?(tip?'TRACKING':'SEARCHING'):(g==='draw'?'ACTIVE':g==='pause'?'PAUSED':'READY')}`:'AIR CANVAS'}</div>
-     {aligned&&<div className="shape-toast">{aligned}</div>}
-    </div>
+  <header className="nav"><div className="wordmark"><span className="mark" aria-hidden="true">A</span><div><strong>AirCanvas</strong><small>gesture interface</small></div></div><div className={ready?'engine live':'engine'}><i/>{ready?'VISION LIVE':'READY'}</div></header>
+  <section className="hero"><div className="hero-copy"><p className="kicker">AIR CANVAS / 001</p><h1>Your hand.<br/><em>Your canvas.</em></h1><p className="lead">A camera-first interface for drawing, pointing and explaining ideas in the air.</p><div className="actions">{!camera?<button className="start" onClick={start} disabled={loading}>{loading?<Circle className="spin" size={16}/>:<Play size={15} fill="currentColor"/>}{loading?'Starting camera':'Try AirCanvas'}</button>:<button className="stop" onClick={stop}><Square size={13} fill="currentColor"/> Stop camera</button>}</div>{error&&<p className="error">{error}</p>}</div>
+   <div className="hero-camera"><div className="camera-head"><div><span className="eyebrow">LIVE SURFACE</span><span className="camera-state"><i className={camera?'on':''}/>{camera?(ready?'Tracking':'Starting'):'Camera ready'}</span></div><span className="camera-index">01</span></div>
+    <div className="mode-dock" aria-label="AirCanvas modes">{Object.entries(MODES).map(([key,item])=>{const I=item.icon;return <button key={key} className={mode===key?'active':''} onClick={()=>{setMode(key);previous.current=null;points.current=[];trail.current=[]}}><I size={15}/><span>{item.label}</span></button>})}</div>
+    <div className="surface"><video ref={video} className="video" playsInline muted autoPlay/><canvas ref={canvas} className="canvas"/>{tip&&camera&&<div className={`reticle ${mode==='pointer'||g==='draw'?'active':''}`} style={{left:tip.x,top:tip.y}}><span/></div>}{!camera&&<div className="empty"><div className="empty-icon"><Camera size={21}/></div><strong>Camera preview</strong><span>Allow access to begin</span></div>}<div className="surface-label">{camera?`${M.label.toUpperCase()} / ${mode==='pointer'?(tip?'TRACKING':'SEARCHING'):(g==='draw'?'ACTIVE':g==='pause'?'PAUSED':'READY')}`:'AIR CANVAS'}</div>{aligned&&<div className="shape-toast">{aligned}</div>}</div>
     <div className="camera-meta"><span>ONE HAND</span><span>NO MOUSE</span><span>LOCAL VISION</span></div>
    </div>
   </section>
-  <footer><span>AirCanvas</span><span>Made by Amar</span></footer>
+  <section className="story"><div className="story-label">02 / THE VISION</div><div className="story-grid"><div><h2>Vision should feel<br/><em>natural.</em></h2></div><div className="story-copy"><p>AirCanvas is built around a simple belief: the best interface is sometimes the one that disappears.</p><p>Instead of reaching for a mouse, opening a toolbar or breaking the flow of a conversation, you use the movement you already understand — your hand.</p><div className="story-rule"><span>BUILT BY</span><strong>Amarnath Mishra</strong></div><p className="story-note">The vision is to make computer vision useful in everyday communication: a layer that can see intent, learn from interaction and turn a human gesture into something people can understand.</p></div></div></section>
+  <footer className="footer"><div>AirCanvas / 001 <span>·</span> Built by Amarnath Mishra</div><a href="https://www.linkedin.com/in/amarnath-mishra" target="_blank" rel="noreferrer">LinkedIn</a></footer>
  </main>;
 }
-
 createRoot(document.getElementById('root')).render(<App/>);
