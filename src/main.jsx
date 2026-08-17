@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Camera, Circle, Hand, MousePointer2, PenLine, Play, Sparkles, Square, Zap } from 'lucide-react';
+import { Camera, Circle, MousePointer2, PenLine, Play, Sparkles, Square, Zap } from 'lucide-react';
 import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 import './styles.css';
 
@@ -8,8 +8,13 @@ const MP_VERSION = '0.10.35';
 const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
 const MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 const BACKEND_WS = import.meta.env.VITE_VISION_WS_URL || '';
-const MODES = { draw:{label:'Draw',icon:PenLine,hint:'Freehand ink'}, shape:{label:'Shape',icon:Sparkles,hint:'Align rough shapes'}, pointer:{label:'Pointer',icon:MousePointer2,hint:'Point anywhere'}, laser:{label:'Laser',icon:Zap,hint:'Highlight briefly'} };
-const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+const MODES = {
+  draw: { label: 'Draw', icon: PenLine, hint: 'Freehand ink' },
+  shape: { label: 'Shape', icon: Sparkles, hint: 'Perfect geometry' },
+  pointer: { label: 'Pointer', icon: MousePointer2, hint: 'Point anywhere' },
+  laser: { label: 'Laser', icon: Zap, hint: 'Highlight briefly' }
+};
+const dist = (a,b) => Math.hypot(a.x-b.x,a.y-b.y);
 function angle(a,b,c){const ab={x:a.x-b.x,y:a.y-b.y},cb={x:c.x-b.x,y:c.y-b.y},d=(Math.hypot(ab.x,ab.y)*Math.hypot(cb.x,cb.y))||1;return Math.acos(Math.max(-1,Math.min(1,(ab.x*cb.x+ab.y*cb.y)/d)))*180/Math.PI}
 function fingerExtended(h,m,p,t){const pip=angle(h[m],h[p],h[t]);const reach=dist(h[m],h[t]);const segment=dist(h[m],h[p]);return pip>138&&reach>segment*1.03}
 function classifyGesture(h){if(!h||h.length!==21)return'none';const i=fingerExtended(h,5,6,8),m=fingerExtended(h,9,10,12),r=fingerExtended(h,13,14,16),p=fingerExtended(h,17,18,20);if(i&&!m&&!r&&!p)return'draw';if(i&&m&&r&&p)return'clear';if(!i&&!m&&!r&&!p)return'pause';return'none'}
@@ -37,7 +42,39 @@ function App(){
  useEffect(()=>{window.addEventListener('resize',resize);return()=>window.removeEventListener('resize',resize)},[resize]);
  useEffect(()=>()=>stop(),[stop]);
  const M=MODES[mode];
- return <main className="site"><header className="nav"><div className="wordmark"><span className="mark">A</span><div><strong>AirCanvas</strong><small>gesture studio / 001</small></div></div><div className="nav-meta"><span className={ready?'engine live':'engine'}><i/>{ready?'VISION LIVE':'VISION OFF'}</span><span>PASSION PROJECT</span></div></header><section className="hero"><div className="hero-copy"><p className="kicker">HUMAN · COMPUTER · INTERACTION</p><h1>Put the idea<br/><em>in the air.</em></h1><p className="lead">Your hand becomes the interface. Draw, point, align shapes or highlight ideas without touching the screen.</p><div className="actions">{!camera?<button className="start" onClick={start} disabled={loading}>{loading?<Circle className="spin" size={16}/>:<Play size={16} fill="currentColor"/>}{loading?'Opening camera':'Open camera'}</button>:<button className="stop" onClick={stop}><Square size={14} fill="currentColor"/> Stop</button>}<span><Hand size={15}/> one hand · no mouse</span></div>{error&&<p className="error">{error}</p>}<div className="hero-promise"><span>☝ DRAW</span><span>◇ ALIGN</span><span>⌖ POINT</span><span>⚡ LASER</span></div></div><div className="hero-camera"><div className="camera-top"><span><i className={camera?'on':''}/>{camera?(ready?'VISION TRACKING LIVE':'STARTING VISION'):'LIVE CAMERA'}</span><span>01 / USP</span></div><div className="surface"><video ref={video} className="video" playsInline muted autoPlay/><canvas ref={canvas} className="canvas"/>{tip&&camera&&<div className={`reticle ${mode==='pointer'||g==='draw'?'active':''}`} style={{left:tip.x,top:tip.y}}><span/></div>}{!camera&&<div className="empty"><div className="empty-icon"><Camera size={23}/></div><strong>See AirCanvas in action.</strong><span>Open camera · raise one finger · move.</span></div>}<div className="surface-label">{camera?`${M.label.toUpperCase()} · ${mode==='pointer'?(tip?'TRACKING':'SEARCHING'):(g==='draw'?'LIVE':g==='pause'?'PAUSED':'READY')}`:'YOUR HAND IS THE CONTROLLER'}</div>{aligned&&<div className="shape-toast">✓ {aligned}</div>}</div><div className="camera-bottom"><span>☝ draw</span><span>✊ pause / align</span><span>🖐 clear</span></div></div></section><section className="instruments"><div><small>02 / CHOOSE YOUR INSTRUMENT</small><h2>One surface.<br/>Four ways to explain.</h2></div><div className="mode-grid">{Object.entries(MODES).map(([key,item])=>{const I=item.icon;return <button key={key} className={mode===key?'active':''} onClick={()=>{setMode(key);previous.current=null;points.current=[];trail.current=[]}}><I size={17}/><b>{item.label}</b><small>{item.hint}</small></button>})}</div></section><section className="build"><div><small>03 / VISION FIRST</small><h2>Camera → landmarks →<br/>finger point.</h2></div><p>Shape mode turns rough closed strokes into regular geometry: three detected corners become a clean triangle, four become a square, five a pentagon, and so on. Round closed strokes become circles. Hold the pause gesture to commit the correction.</p></section><footer>Made by - Amar <span>·</span> AirCanvas / passion project 001</footer></main>;
+ return <main className="site">
+  <header className="nav">
+   <div className="wordmark"><span className="mark" aria-hidden="true">A</span><div><strong>AirCanvas</strong><small>gesture interface</small></div></div>
+   <div className={ready?'engine live':'engine'}><i/>{ready?'VISION LIVE':'READY'}</div>
+  </header>
+  <section className="hero">
+   <div className="hero-copy">
+    <p className="kicker">AIR CANVAS / 001</p>
+    <h1>Your hand.<br/><em>Your canvas.</em></h1>
+    <p className="lead">A camera-first interface for drawing, pointing and explaining ideas in the air.</p>
+    <div className="actions">
+     {!camera?<button className="start" onClick={start} disabled={loading}>{loading?<Circle className="spin" size={16}/>:<Play size={15} fill="currentColor"/>}{loading?'Starting camera':'Try AirCanvas'}</button>:<button className="stop" onClick={stop}><Square size={13} fill="currentColor"/> Stop camera</button>}
+    </div>
+    {error&&<p className="error">{error}</p>}
+   </div>
+   <div className="hero-camera">
+    <div className="camera-head"><div><span className="eyebrow">LIVE SURFACE</span><span className="camera-state"><i className={camera?'on':''}/>{camera?(ready?'Tracking':'Starting'):'Camera ready'}</span></div><span className="camera-index">01</span></div>
+    <div className="mode-dock" aria-label="AirCanvas modes">
+     {Object.entries(MODES).map(([key,item])=>{const I=item.icon;return <button key={key} className={mode===key?'active':''} onClick={()=>{setMode(key);previous.current=null;points.current=[];trail.current=[]}}><I size={15}/><span>{item.label}</span></button>})}
+    </div>
+    <div className="surface">
+     <video ref={video} className="video" playsInline muted autoPlay/>
+     <canvas ref={canvas} className="canvas"/>
+     {tip&&camera&&<div className={`reticle ${mode==='pointer'||g==='draw'?'active':''}`} style={{left:tip.x,top:tip.y}}><span/></div>}
+     {!camera&&<div className="empty"><div className="empty-icon"><Camera size={21}/></div><strong>Camera preview</strong><span>Allow access to begin</span></div>}
+     <div className="surface-label">{camera?`${M.label.toUpperCase()} / ${mode==='pointer'?(tip?'TRACKING':'SEARCHING'):(g==='draw'?'ACTIVE':g==='pause'?'PAUSED':'READY')}`:'AIR CANVAS'}</div>
+     {aligned&&<div className="shape-toast">{aligned}</div>}
+    </div>
+    <div className="camera-meta"><span>ONE HAND</span><span>NO MOUSE</span><span>LOCAL VISION</span></div>
+   </div>
+  </section>
+  <footer><span>AirCanvas</span><span>Made by Amar</span></footer>
+ </main>;
 }
 
 createRoot(document.getElementById('root')).render(<App/>);
