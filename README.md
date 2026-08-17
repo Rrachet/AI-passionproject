@@ -1,145 +1,245 @@
 # AirCanvas
 
-> Put the idea in the air.
+**A camera-first interface for drawing, pointing and explaining ideas with your hand.**
 
-AirCanvas is a real-time computer-vision passion project exploring a simple question: **can a hand become a useful interface for explaining ideas?**
+AirCanvas is a personal computer-vision project by **Amarnath Mishra**. It turns a live camera feed into an interactive canvas: move your index finger and the system follows it in real time.
 
-The long-term target is a Chrome extension for calls and meetings. The user should be able to draw, point, highlight or clean up a rough sketch directly over a conversation.
+The project is being built as an engineering experiment, not as a clone of an existing drawing app. The goal is to understand what happens when hand tracking, temporal reasoning and a lightweight AR layer become one interface.
 
-## Architecture
+[Live product](https://ai-passionproject.vercel.app) · [Builder](https://www.linkedin.com/in/amarnath-mishra)
+
+---
+
+## Why AirCanvas exists
+
+A mouse and keyboard are excellent for structured input. They are not always the best tools for explaining a shape, pointing at something during a call, or sketching an idea while speaking.
+
+AirCanvas explores a different interaction model:
+
+**See the hand. Understand the movement. Turn the movement into an interface.**
+
+The long-term direction is a browser extension that can place this interaction layer over meetings, calls, presentations and browser content.
+
+---
+
+## What it can do today
+
+| Mode | Purpose |
+| --- | --- |
+| **Draw** | Follow the index fingertip and create continuous freehand strokes. |
+| **Shape** | Turn rough geometry into cleaner lines and polygons. |
+| **Pointer** | Use the fingertip as a presentation pointer. |
+| **Laser** | Create a temporary visual trail for emphasis. |
+
+The interface is designed around a camera-first workflow. Camera permission stays in the browser, while the canvas renders the interaction locally.
+
+---
+
+## System design
 
 ```text
-Camera (phone / laptop)
-        |
-        v
-React + Canvas + MediaPipe
-        |
-        | 21 hand landmarks / frame
-        v
-Python FastAPI + WebSocket
-        |
-        +--> temporal filtering
-        +--> gesture memory
-        +--> short-gap prediction
-        +--> movement analysis
-        +--> shape alignment
-        +--> future learned models
-        |
-        v
-AR interaction layer
+                  Camera
+                    |
+                    v
+          MediaPipe Hand Landmarks
+                    |
+          +---------+---------+
+          |                   |
+          v                   v
+     Browser Canvas       Python Engine
+     low-latency UI       temporal reasoning
+          |                   |
+          +---------+---------+
+                    |
+                    v
+             AirCanvas Layer
+          draw / shape / pointer / laser
 ```
 
-The browser owns camera permissions and fast visual rendering. Python is the temporal intelligence layer. We intentionally send compact hand landmarks rather than uploading raw camera video frame-by-frame.
+The browser handles camera access, hand-landmark detection and immediate visual feedback. The Python service is the experimental intelligence layer for temporal filtering, gesture reasoning, movement analysis and shape processing.
 
-> More Python is not automatically better. The useful goal is to put the parts that need temporal reasoning, evaluation and training in Python, then measure whether they actually improve tracking.
+Only compact hand-landmark data is intended to cross the browser-to-Python boundary; the architecture does not require continuously uploading raw camera video to the Python service.
 
-## Interaction modes
+---
 
-- **Draw** — continuous freehand AR ink.
-- **Shape** — sketch a rough line, circle or rectangle; make a fist to align it.
-- **Pointer** — fingertip becomes a clean presentation pointer.
-- **Laser** — temporary glowing trail for emphasis.
+## Vision engine
 
-Core gestures:
+The Python side is where the project is deliberately evolving.
 
-- ☝️ index finger — interact / draw
-- ✊ fist — pause; in Shape mode, commit alignment
-- 🖐️ open palm — hold to clear
+Current work includes:
 
-## Python vision engine
+- temporal fingertip tracking
+- adaptive smoothing
+- velocity estimation
+- confidence handling
+- short tracking-gap prediction
+- temporal gesture voting
+- polygon and shape alignment
+- WebSocket communication between the browser and Python
+- an experimental training path for future learned models
 
-The Python backend now contains a temporal tracker using an adaptive One Euro filter, velocity estimation, confidence decay and short prediction bridges for missed frames. Gesture classification uses joint geometry plus temporal majority voting rather than trusting one noisy frame.
+The important engineering principle is simple:
 
-It also exposes `/shape` for Python-side shape alignment and `/ws/vision` for real-time gesture/tip results.
+> More Python is not automatically better. Python earns its place when it improves tracking, prediction, evaluation or learning.
 
-### Run locally
+The project is therefore being developed through a repeated loop:
 
-Frontend:
+**Build → test → observe → measure → improve.**
+
+---
+
+## Repository structure
+
+```text
+AI-passionproject/
+├── backend/
+│   ├── app/
+│   │   ├── learning.py
+│   │   ├── main.py
+│   │   ├── polygon.py
+│   │   └── tracker.py
+│   └── training/
+│       ├── MODEL_STRATEGY.md
+│       └── train_temporal.py
+├── docs/
+│   └── architecture.md
+├── public/
+│   └── aircanvas-mark.svg
+├── src/
+│   ├── main.jsx
+│   ├── styles.css
+│   └── visionClient.js
+├── index.html
+├── package.json
+└── vite.config.js
+```
+
+---
+
+## Run the frontend
 
 ```bash
 npm install
 npm run dev
 ```
 
-Python vision engine:
+Open the local Vite URL in a browser with camera access enabled.
+
+Camera access requires a secure context such as `localhost` or HTTPS.
+
+---
+
+## Run the Python vision service
+
+Create a virtual environment inside `backend`:
 
 ```bash
 cd backend
 python -m venv .venv
-# Windows
-.venv\\Scripts\\activate
-# macOS/Linux
+```
+
+Windows:
+
+```bash
+.venv\Scripts\activate
+```
+
+macOS / Linux:
+
+```bash
 source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
+```
+
+Start FastAPI:
+
+```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-For the local Python bridge, set:
+For the local browser-to-Python bridge:
 
 ```text
 VITE_VISION_WS_URL=ws://localhost:8000/ws/vision
 ```
 
-The public GitHub Pages build keeps a local MediaPipe fallback so the site remains usable without a Python server. Production Python integration will be enabled once the persistent WebSocket service is deployed.
+The public frontend can fall back to browser-side MediaPipe when the Python WebSocket service is not configured.
 
-## Stack
+---
 
-### Frontend
-- React + Vite
-- JavaScript
-- MediaPipe Tasks Vision
-- HTML Canvas 2D
-- Browser MediaDevices API
+## Development roadmap
 
-### Vision / AI
-- Python
-- FastAPI
-- WebSockets
-- NumPy
-- OpenCV
-- MediaPipe
-- Pydantic
+### Interaction
 
-## Roadmap
-
-### Phase 1 — Air drawing
-- [x] Webcam input
-- [x] Index fingertip tracking
+- [x] Camera input
+- [x] Index-fingertip tracking
 - [x] Gesture-gated drawing
-- [x] Adaptive browser smoothing
-- [x] Brush controls
-- [x] PNG export
+- [x] Browser-side smoothing
+- [x] Draw mode
+- [x] Shape mode
+- [x] Pointer mode
+- [x] Laser mode
+- [x] Shape alignment
 
-### Phase 2 — Python temporal engine
+### Python vision layer
+
 - [x] FastAPI service
 - [x] WebSocket vision channel
 - [x] Server-side gesture classification
-- [x] Adaptive temporal filtering
+- [x] Temporal filtering
 - [x] Confidence tracking
-- [x] Short tracking-drop prediction
+- [x] Tracking-gap prediction
 - [x] Python shape alignment
 - [ ] Production WebSocket deployment
+- [ ] Measured tracking benchmark
+- [ ] Training dataset and evaluation pipeline
 
-### Phase 3 — Intelligent drawing agent
-- [ ] Pinch / swipe vocabulary
+### Intelligent interaction
+
+- [ ] Pinch and swipe vocabulary
 - [ ] Stroke segmentation
 - [ ] Learned shape classifier
 - [ ] Handwriting recognition
 - [ ] Canvas understanding
-- [ ] Natural-language commands
-- [ ] AI-assisted drawing cleanup
+- [ ] Natural-language drawing commands
+- [ ] AI-assisted cleanup
 
-### Phase 4 — Meeting extension
+### Browser extension
+
 - [ ] Chrome Manifest V3 extension
 - [ ] Transparent AR overlay
-- [ ] Meet / browser tab integration
+- [ ] Browser-tab integration
+- [ ] Meeting integration
 - [ ] Persistent annotations
-- [ ] Shared collaboration layer
+- [ ] Shared collaboration
 
-## Project philosophy
+---
 
-Build → test → observe → measure → improve.
+## Design philosophy
 
-This is intentionally an engineering experiment rather than a tutorial clone. Every tracking failure becomes a data point for the next iteration.
+AirCanvas should feel like a real product, not a generated demo.
 
-**Made by Amar.**
+The interface is intentionally restrained: system typography, a small visual language, direct interaction and the camera as the central product surface.
+
+The same principle applies to the codebase. Features are added because they improve the interaction, not because they make the project look larger.
+
+---
+
+## Built by
+
+**Amarnath Mishra**
+
+Computer science engineer building AirCanvas as an independent passion project around computer vision, interaction design and real-time systems.
+
+[LinkedIn](https://www.linkedin.com/in/amarnath-mishra)
+
+---
+
+## License
+
+MIT License. See `LICENSE` for details.
