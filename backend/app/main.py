@@ -8,8 +8,9 @@ from pydantic import BaseModel, Field
 
 from .tracker import Point, TemporalTracker, classify, stable_gesture
 from .polygon import align_shape
+from .learning import record_feedback, stats as learning_stats
 
-app = FastAPI(title='AirCanvas Python Vision Engine', version='0.6.0')
+app = FastAPI(title='AirCanvas Python Vision Engine', version='0.7.0')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_credentials=False, allow_methods=['*'], allow_headers=['*'])
 Gesture = Literal['DRAW', 'PAUSE', 'CLEAR', 'UNKNOWN']
 
@@ -26,13 +27,20 @@ class HandFrame(BaseModel):
 class Stroke(BaseModel):
     points: list[Landmark] = Field(min_length=4, max_length=5000)
 
+class Feedback(BaseModel):
+    landmarks: list[Landmark] = Field(min_length=21, max_length=21)
+    predicted: Gesture
+    corrected: Gesture | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source: str = 'live'
+
 @app.get('/')
 def root() -> dict[str, str]:
-    return {'service': 'aircanvas-python-vision', 'version': '0.6.0', 'websocket': '/ws/vision'}
+    return {'service': 'aircanvas-python-vision', 'version': '0.7.0', 'websocket': '/ws/vision'}
 
 @app.get('/health')
 def health() -> dict[str, str]:
-    return {'status': 'ok', 'service': 'aircanvas-python-vision', 'engine': 'temporal-v0.6'}
+    return {'status': 'ok', 'service': 'aircanvas-python-vision', 'engine': 'temporal-v0.7'}
 
 def analyse(frame: HandFrame, tracker: TemporalTracker) -> dict:
     pts = [Point(p.x, p.y) for p in frame.landmarks]
@@ -48,6 +56,15 @@ def gesture(frame: HandFrame) -> dict:
 @app.post('/shape')
 def shape(frame: Stroke) -> dict:
     return align_shape([Point(p.x, p.y) for p in frame.points])
+
+@app.post('/learning/feedback')
+def feedback(item: Feedback) -> dict:
+    row = record_feedback([p.model_dump() for p in item.landmarks], item.predicted, item.corrected, item.confidence, item.source)
+    return {'accepted': True, 'hard_example': row['hard_example'], 'stats': learning_stats()}
+
+@app.get('/learning/stats')
+def feedback_stats() -> dict:
+    return learning_stats()
 
 @app.websocket('/ws/vision')
 async def vision_socket(websocket: WebSocket) -> None:
